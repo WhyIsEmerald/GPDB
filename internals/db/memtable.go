@@ -1,10 +1,12 @@
 package db
 
-type MemTable[K comparable, V any] struct {
+import "github.com/WhyIsEmerald/GPDB/internals/generics"
+
+type MemTable[K generics.Ordered, V any] struct {
 	data map[K]V
 }
 
-func NewMemTable[K comparable, V any]() *MemTable[K, V] {
+func NewMemTable[K generics.Ordered, V any]() *MemTable[K, V] {
 	return &MemTable[K, V]{
 		data: make(map[K]V),
 	}

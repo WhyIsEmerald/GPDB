@@ -1,12 +1,16 @@
 package db
 
-import "errors"
+import (
+	"errors"
 
-type DB[K comparable, V any] struct {
+	"github.com/WhyIsEmerald/GPDB/internals/generics"
+)
+
+type DB[K generics.Ordered, V any] struct {
 	memtable *MemTable[K, V]
 }
 
-func NewDB[K comparable, V any]() (*DB[K, V], error) {
+func NewDB[K generics.Ordered, V any]() (*DB[K, V], error) {
 	memtable := NewMemTable[K, V]()
 	return &DB[K, V]{
 		memtable: memtable,

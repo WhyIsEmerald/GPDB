@@ -14,8 +14,9 @@ type SSTable[K generics.Ordered, V any] struct {
 }
 
 type Pair[K generics.Ordered, V any] struct {
-	Key   K
-	Value V
+	Key         K
+	Value       V
+	IsTombstone bool
 }
 
 func writeSSTable[K generics.Ordered, V any](memtable *MemTable[K, V], path string) (*SSTable[K, V], error) {
@@ -26,8 +27,8 @@ func writeSSTable[K generics.Ordered, V any](memtable *MemTable[K, V], path stri
 	defer file.Close()
 
 	pairs := make([]Pair[K, V], 0, len(memtable.data))
-	for k, v := range memtable.data {
-		pairs = append(pairs, Pair[K, V]{Key: k, Value: v})
+	for k, e := range memtable.data {
+		pairs = append(pairs, Pair[K, V]{Key: k, Value: e.value, IsTombstone: e.isTombstone})
 	}
 
 	sort.Slice(pairs, func(i, j int) bool {
@@ -66,7 +67,7 @@ func (s *SSTable[K, V]) Get(key K) (V, error) {
 
 		cmp := generics.Compare(pair.Key, key)
 		if cmp == 0 {
-			if val, ok := any(pair.Value).(string); ok && val == "__TOMBSTONE__" {
+			if pair.IsTombstone {
 				var zero V
 				return zero, errNotFound
 			}

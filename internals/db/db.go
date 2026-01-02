@@ -38,6 +38,19 @@ func (db *DB[K, V]) Put(key K, value V) error {
 	return nil
 }
 
+func (db *DB[K, V]) Delete(key K) error {
+	db.memtable.Delete(key)
+	db.memtableSize++
+
+	if db.memtableSize >= db.maxMemtableSize {
+		if err := db.flushMemtable(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (db *DB[K, V]) flushMemtable() error {
 	sstablePath := fmt.Sprintf("data-%d.sstable", db.sstableCounter)
 	sstable, err := writeSSTable(db.memtable, sstablePath)
@@ -54,8 +67,12 @@ func (db *DB[K, V]) flushMemtable() error {
 }
 
 func (db *DB[K, V]) Get(key K) (V, error) {
-	if val, ok := db.memtable.Get(key); ok {
-		return val, nil
+	if entry, ok := db.memtable.Get(key); ok {
+		if entry.isTombstone {
+			var zero V
+			return zero, errNotFound
+		}
+		return entry.value, nil
 	}
 
 	for i := len(db.sstables) - 1; i >= 0; i-- {

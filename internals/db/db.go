@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/WhyIsEmerald/GPDB/internals/generics"
 )
@@ -79,7 +80,8 @@ func (db *DB[K, V]) Delete(key K) error {
 }
 
 func (db *DB[K, V]) flushMemtable() error {
-	sstablePath := fmt.Sprintf("data-%d.sstable", db.sstableCounter)
+	sstableFileName := fmt.Sprintf("data-%d.sstable", db.sstableCounter)
+	sstablePath := filepath.Join(db.sstablePath, sstableFileName)
 	sstable, err := writeSSTable(db.memtable, sstablePath)
 	if err != nil {
 		return err

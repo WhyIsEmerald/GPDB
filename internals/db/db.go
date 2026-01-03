@@ -138,6 +138,10 @@ func (db *DB[K, V]) flushMemtable() error {
 		return err
 	}
 
+	if err := db.wal.Truncate(); err != nil {
+		return err
+	}
+
 	db.memtable = NewMemTable[K, V]()
 	db.memtableSize = 0
 

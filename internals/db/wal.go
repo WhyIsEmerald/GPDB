@@ -34,6 +34,23 @@ func (wal *WAL[K, V]) Write(key K, entry generics.Entry[V]) error {
 	return wal.encoder.Encode(&walEntry)
 }
 
+func (wal *WAL[K, V]) Truncate() error {
+	path := wal.file.Name()
+	if err := wal.file.Close(); err != nil {
+		return err
+	}
+
+	file, err := os.OpenFile(path, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+
+	wal.file = file
+	wal.encoder = gob.NewEncoder(file)
+
+	return nil
+}
+
 func ReplayWAL[K generics.Ordered, V any](path string) (*MemTable[K, V], error) {
 	memtable := NewMemTable[K, V]()
 	file, err := os.Open(path)

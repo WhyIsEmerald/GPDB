@@ -16,25 +16,42 @@ type DB[K generics.Ordered, V any] struct {
 	sstablePath     string
 	wal             *WAL[K, V]
 	walPath         string
+	manifest        *Manifest
+	manifestPath    string
 }
 
-func NewDB[K generics.Ordered, V any](maxMemtableSize int, sstablePath, walPath string) (*DB[K, V], error) {
+func NewDB[K generics.Ordered, V any](maxMemtableSize int, sstablePath, walPath string, manifestPath string) (*DB[K, V], error) {
 	memtable, err := ReplayWAL[K, V](walPath)
 	if err != nil {
 		return nil, err
 	}
+
 	wal, err := NewWAL[K, V](walPath)
 	if err != nil {
 		return nil, err
 	}
+
+	manifestPath = filepath.Join(sstablePath, "manifest")
+	manifest, err := ReadManifest(manifestPath)
+	if err != nil {
+		return nil, err
+	}
+
+	sstables := make([]*SSTable[K, V], len(manifest.SSTablePaths))
+	for i, path := range manifest.SSTablePaths {
+		sstables[i] = &SSTable[K, V]{path: path}
+	}
+
 	return &DB[K, V]{
 		memtable:        memtable,
 		maxMemtableSize: maxMemtableSize,
 		memtableSize:    len(memtable.data),
-		sstables:        make([]*SSTable[K, V], 0),
+		sstables:        sstables,
 		sstablePath:     sstablePath,
 		wal:             wal,
 		walPath:         walPath,
+		manifest:        manifest,
+		manifestPath:    manifestPath,
 	}, nil
 }
 
@@ -79,22 +96,6 @@ func (db *DB[K, V]) Delete(key K) error {
 	return nil
 }
 
-func (db *DB[K, V]) flushMemtable() error {
-	sstableFileName := fmt.Sprintf("data-%d.sstable", db.sstableCounter)
-	sstablePath := filepath.Join(db.sstablePath, sstableFileName)
-	sstable, err := writeSSTable(db.memtable, sstablePath)
-	if err != nil {
-		return err
-	}
-
-	db.sstables = append(db.sstables, sstable)
-	db.sstableCounter++
-	db.memtable = NewMemTable[K, V]()
-	db.memtableSize = 0
-
-	return nil
-}
-
 func (db *DB[K, V]) Get(key K) (V, error) {
 	if entry, ok := db.memtable.Get(key); ok {
 		if entry.IsTombstone {
@@ -119,4 +120,26 @@ func (db *DB[K, V]) Get(key K) (V, error) {
 
 	var zero V
 	return zero, errNotFound
+}
+
+func (db *DB[K, V]) flushMemtable() error {
+	sstableFileName := fmt.Sprintf("data-%d.sstable", db.sstableCounter)
+	sstablePath := filepath.Join(db.sstablePath, sstableFileName)
+	sstable, err := writeSSTable(db.memtable, sstablePath)
+	if err != nil {
+		return err
+	}
+
+	db.sstables = append(db.sstables, sstable)
+	db.sstableCounter++
+
+	db.manifest.SSTablePaths = append(db.manifest.SSTablePaths, sstablePath)
+	if err := WriteManifest(db.manifestPath, db.manifest); err != nil {
+		return err
+	}
+
+	db.memtable = NewMemTable[K, V]()
+	db.memtableSize = 0
+
+	return nil
 }

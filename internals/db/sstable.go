@@ -28,7 +28,7 @@ func writeSSTable[K generics.Ordered, V any](memtable *MemTable[K, V], path stri
 
 	pairs := make([]Pair[K, V], 0, len(memtable.data))
 	for k, e := range memtable.data {
-		pairs = append(pairs, Pair[K, V]{Key: k, Value: e.value, IsTombstone: e.isTombstone})
+		pairs = append(pairs, Pair[K, V]{Key: k, Value: e.Value, IsTombstone: e.IsTombstone})
 	}
 
 	sort.Slice(pairs, func(i, j int) bool {

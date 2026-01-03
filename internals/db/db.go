@@ -12,22 +12,41 @@ type DB[K generics.Ordered, V any] struct {
 	memtableSize    int
 	sstables        []*SSTable[K, V]
 	sstableCounter  int
+	sstablePath     string
+	wal             *WAL[K, V]
+	walPath         string
 }
 
-func NewDB[K generics.Ordered, V any](maxMemtableSize int) (*DB[K, V], error) {
-	sstables := make([]*SSTable[K, V], 0)
-	memtable := NewMemTable[K, V]()
-
+func NewDB[K generics.Ordered, V any](maxMemtableSize int, sstablePath, walPath string) (*DB[K, V], error) {
+	memtable, err := ReplayWAL[K, V](walPath)
+	if err != nil {
+		return nil, err
+	}
+	wal, err := NewWAL[K, V](walPath)
+	if err != nil {
+		return nil, err
+	}
 	return &DB[K, V]{
 		memtable:        memtable,
 		maxMemtableSize: maxMemtableSize,
-		sstables:        sstables,
+		memtableSize:    len(memtable.data),
+		sstables:        make([]*SSTable[K, V], 0),
+		sstablePath:     sstablePath,
+		wal:             wal,
+		walPath:         walPath,
 	}, nil
 }
 
 func (db *DB[K, V]) Put(key K, value V) error {
-	db.memtable.Put(key, value)
-	db.memtableSize++
+	entry := generics.Entry[V]{Value: value, IsTombstone: false}
+	if err := db.wal.Write(key, entry); err != nil {
+		return err
+	}
+
+	if _, ok := db.memtable.data[key]; !ok {
+		db.memtableSize++
+	}
+	db.memtable.data[key] = entry
 
 	if db.memtableSize >= db.maxMemtableSize {
 		if err := db.flushMemtable(); err != nil {
@@ -39,8 +58,16 @@ func (db *DB[K, V]) Put(key K, value V) error {
 }
 
 func (db *DB[K, V]) Delete(key K) error {
-	db.memtable.Delete(key)
-	db.memtableSize++
+	var zero V
+	entry := generics.Entry[V]{Value: zero, IsTombstone: true}
+	if err := db.wal.Write(key, entry); err != nil {
+		return err
+	}
+
+	if _, ok := db.memtable.data[key]; !ok {
+		db.memtableSize++
+	}
+	db.memtable.data[key] = entry
 
 	if db.memtableSize >= db.maxMemtableSize {
 		if err := db.flushMemtable(); err != nil {
@@ -68,11 +95,11 @@ func (db *DB[K, V]) flushMemtable() error {
 
 func (db *DB[K, V]) Get(key K) (V, error) {
 	if entry, ok := db.memtable.Get(key); ok {
-		if entry.isTombstone {
+		if entry.IsTombstone {
 			var zero V
 			return zero, errNotFound
 		}
-		return entry.value, nil
+		return entry.Value, nil
 	}
 
 	for i := len(db.sstables) - 1; i >= 0; i-- {

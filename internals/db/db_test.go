@@ -51,9 +51,28 @@ func TestDB_Integration(t *testing.T) {
 		t.Fatalf("Expected errNotFound, got %v", err)
 	}
 
+	// Record WAL size before the flush
+	walInfoBeforeFlush, err := os.Stat(walPath)
+	if err != nil {
+		t.Fatalf("Failed to stat WAL file before flush: %v", err)
+	}
+	walSizeBeforeFlush := walInfoBeforeFlush.Size()
+	if walSizeBeforeFlush == 0 {
+		t.Fatalf("WAL file unexpectedly empty before flush, current size: %d", walSizeBeforeFlush)
+	}
+
 	// 3. Flush to sstable and get
-	db.Put("b", "banana")
-	db.Put("c", "cherry") // Flushes here
+	db.Put("b", "banana") // memtableSize: 2
+	db.Put("c", "cherry") // memtableSize: 3, this PUT triggers the flush
+
+	// Verify WAL file is truncated after flush
+	walInfoAfterFlush, err := os.Stat(walPath)
+	if err != nil {
+		t.Fatalf("Failed to stat WAL file after flush: %v", err)
+	}
+	if walInfoAfterFlush.Size() != 0 {
+		t.Errorf("WAL file not empty after flush. Expected size 0, got %d", walInfoAfterFlush.Size())
+	}
 	db.Put("d", "date")
 
 	// Test get from sstable

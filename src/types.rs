@@ -3,8 +3,14 @@ use std::cmp::Ord;
 use std::hash::Hash;
 
 #[derive(Clone, Serialize, Deserialize)]
+/// Entry stores the value for a key in the database together with a tombstone flag.
+///
+/// `value` contains the actual stored data of generic type `V`. `is_tombstone` is set to
+/// true when the entry represents a deletion rather than a live value. Tombstones are
+/// persisted so deletions are durable and can be observed during reads, and so that
+/// compaction/merge processes can correctly remove or reconcile deleted keys.
 pub struct Entry<V> {
-    pub value: V,
+    pub value: Option<V>,
     pub is_tombstone: bool,
 }
 

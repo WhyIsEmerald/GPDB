@@ -51,7 +51,7 @@ disk as an sstable when it reaches its configured size.
 
 *   **Code Style:** Follow the idiomatic style of the language you are working in (Go or Rust). Run `go fmt` or `cargo fmt` before committing to ensure consistent formatting.
 *   **Comments:** Comments should be used sparingly. The code should be as self-documenting as possible.
-    *   **DO** add comments to explain the *why* behind a piece of code, especially for complex algorithms, non-obvious logic, or important trade-offs.
+    *   **DO** add comments to explain the *why* behind a piece of code, especially for complex algorithms, non-obvious logic, or important trade-offs; Always add comments for functions, methods, custom types , and classes, inorder to make them easy to use.
     *   **DO NOT** add comments that simply restate what the code is doing. For example, avoid comments like `// increment i`.
 
 Thank you for your contribution!

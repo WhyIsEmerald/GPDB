@@ -16,7 +16,7 @@ where
 impl<K, V> MemTable<K, V>
 where
     K: DBKey,
-    V: Clone + Default,
+    V: Clone,
 {
     /// Creates a new, empty `MemTable`.
     pub fn new() -> Self {
@@ -26,21 +26,21 @@ where
     }
 
     /// Inserts/Updates a key-value pair into the `MemTable`.
-    pub fn put(&mut self, key: K, value: V) {
+    pub fn put(&mut self, key: K, value: V) -> Option<Entry<V>> {
         let entry = Entry {
             value: Some(value),
             is_tombstone: false,
         };
-        self.data.insert(key, entry);
+        self.data.insert(key, entry)
     }
 
     /// Marks a key as deleted by inserting a tombstone.
-    pub fn delete(&mut self, key: K) {
+    pub fn delete(&mut self, key: K) -> Option<Entry<V>> {
         let entry = Entry {
             value: None,
             is_tombstone: true,
         };
-        self.data.insert(key, entry);
+        self.data.insert(key, entry)
     }
 
     /// Retrieves the `Entry` associated with a key, if it exists and is not a tombstone.

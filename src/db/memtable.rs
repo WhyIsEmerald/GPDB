@@ -1,5 +1,5 @@
 use crate::types::{DBKey, Entry};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// A simple in-memory key-value store, acting as the write-back cache.
 ///
@@ -10,7 +10,8 @@ where
     K: DBKey,
     V: Clone,
 {
-    data: HashMap<K, Entry<V>>,
+    b_tree_map: BTreeMap<K, Entry<V>>,
+    hash_map: HashMap<K, Entry<V>>,
 }
 
 impl<K, V> MemTable<K, V>
@@ -21,7 +22,8 @@ where
     /// Creates a new, empty `MemTable`.
     pub fn new() -> Self {
         MemTable {
-            data: HashMap::new(),
+            hash_map: HashMap::new(),
+            b_tree_map: BTreeMap::new(),
         }
     }
 
@@ -31,7 +33,8 @@ where
             value: Some(value),
             is_tombstone: false,
         };
-        self.data.insert(key, entry)
+        self.b_tree_map.insert(key.clone(), entry.clone());
+        self.hash_map.insert(key, entry)
     }
 
     /// Marks a key as deleted by inserting a tombstone.
@@ -40,12 +43,13 @@ where
             value: None,
             is_tombstone: true,
         };
-        self.data.insert(key, entry)
+        self.b_tree_map.insert(key.clone(), entry.clone());
+        self.hash_map.insert(key, entry)
     }
 
     /// Retrieves the `Entry` associated with a key, if it exists and is not a tombstone.
     pub fn get(&self, key: &K) -> Option<&V> {
-        self.data
+        self.hash_map
             .get(key)
             .filter(|entry| !entry.is_tombstone)
             .and_then(|entry| entry.value.as_ref())
@@ -53,7 +57,7 @@ where
 
     /// Returns the number of non-tombstone key-value pairs in the `MemTable`.
     pub fn len(&self) -> usize {
-        self.data
+        self.hash_map
             .iter()
             .filter(|(_, entry)| !entry.is_tombstone)
             .count()

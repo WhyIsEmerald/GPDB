@@ -24,3 +24,9 @@ pub struct Entry<V> {
 pub trait DBKey: Eq + Hash + Ord + Clone + Serialize + DeserializeOwned {}
 
 impl<T> DBKey for T where T: Eq + Hash + Ord + Clone + Serialize + DeserializeOwned {}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum LogEntry<K, V> {
+    Put(K, V),
+    Delete(K),
+}

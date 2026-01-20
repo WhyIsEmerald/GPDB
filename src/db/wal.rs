@@ -1,5 +1,3 @@
-// In src/db/wal.rs
-
 use crate::types::LogEntry;
 use crc32fast::Hasher;
 use serde::{Serialize, de::DeserializeOwned};

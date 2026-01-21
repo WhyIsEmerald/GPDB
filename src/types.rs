@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::cmp::Ord;
 use std::hash::Hash;
+use std::sync::Arc;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 /// Entry stores the value for a key in the database together with a tombstone flag.
 ///
 /// `value` contains the actual stored data of generic type `V`. `is_tombstone` is set to
@@ -10,8 +11,17 @@ use std::hash::Hash;
 /// persisted so deletions are durable and can be observed during reads, and so that
 /// compaction/merge processes can correctly remove or reconcile deleted keys.
 pub struct Entry<V> {
-    pub value: Option<V>,
+    pub value: Option<Arc<V>>,
     pub is_tombstone: bool,
+}
+
+impl<V> Clone for Entry<V> {
+    fn clone(&self) -> Self {
+        Entry {
+            value: self.value.clone(),
+            is_tombstone: self.is_tombstone,
+        }
+    }
 }
 
 /// Keys must be:
@@ -27,6 +37,6 @@ impl<T> DBKey for T where T: Eq + Hash + Ord + Clone + Serialize + DeserializeOw
 
 #[derive(Clone, Serialize, Deserialize)]
 pub enum LogEntry<K, V> {
-    Put(K, V),
+    Put(K, Arc<V>),
     Delete(K),
 }

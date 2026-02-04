@@ -63,4 +63,9 @@ where
             .filter(|(_, entry)| !entry.is_tombstone)
             .count()
     }
+
+    /// Returns an iterator over the sorted key-value entries in the MemTable.
+    pub fn iter(&self) -> std::collections::btree_map::Iter<'_, K, Entry<V>> {
+        self.b_tree_map.iter()
+    }
 }

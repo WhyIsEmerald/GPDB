@@ -70,6 +70,17 @@ where
         Ok(())
     }
 
+    pub fn clear(&mut self) -> io::Result<()> {
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&self.path)?;
+
+        self.writer = BufWriter::new(file);
+        Ok(())
+    }
+
     /// Flushes all buffered writes to the OS and ensures they are written to disk.
     /// This is the "commit" point for durability.
     pub fn flush(&mut self) -> io::Result<()> {

@@ -64,6 +64,12 @@ where
             .count()
     }
 
+    /// Clears the `MemTable` by removing all key-value pairs.
+    pub fn clear(&mut self) {
+        self.hash_map.clear();
+        self.b_tree_map.clear();
+    }
+
     /// Returns an iterator over the sorted key-value entries in the MemTable.
     pub fn iter(&self) -> std::collections::btree_map::Iter<'_, K, Entry<V>> {
         self.b_tree_map.iter()

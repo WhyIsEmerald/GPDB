@@ -8,7 +8,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 /// The fixed size of the footer (24bytes)
 ///
@@ -41,18 +40,18 @@ where
         if file_len < FOOTER_SIZE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "SSTable is too small / lacks footer",
+                "SSTable is too small to contain a valid footer",
             ));
         }
         reader.seek(SeekFrom::End(-(FOOTER_SIZE as i64)))?;
         let mut buf: [u8; 8] = [0u8; 8];
 
         reader.read_exact(&mut buf)?;
-        let mut index_offset = u64::from_le_bytes(buf);
+        let index_offset = u64::from_le_bytes(buf);
         reader.read_exact(&mut buf)?;
-        let mut index_size = u64::from_le_bytes(buf);
+        let index_size = u64::from_le_bytes(buf);
         reader.read_exact(&mut buf)?;
-        let mut magic_number = u64::from_le_bytes(buf);
+        let magic_number = u64::from_le_bytes(buf);
         if magic_number != MAGIC_NUMBER {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -73,32 +72,38 @@ where
         });
     }
 
+    /// Returns the path of this SSTable file.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// Retrieves an Entry for a given key from SSTable file on disk.
-    pub fn get(&mut self, key: &K) -> io::Result<Option<Entry<V>>> {
+    pub fn get(&self, key: &K) -> io::Result<Option<Entry<V>>> {
         let offset = match self.index.get(key) {
             Some(offset) => *offset,
             None => return Ok(None),
         };
-        self.reader.seek(SeekFrom::Start(offset))?;
+        let mut reader = BufReader::new(File::open(&self.path)?);
+        reader.seek(SeekFrom::Start(offset))?;
 
-        // Read the checksums
+        // Read the checksum
         let mut checksum_bytes = [0u8; 4];
-        self.reader.read_exact(&mut checksum_bytes)?;
-        let checksum = u32::from_le_bytes(checksum_bytes);
+        reader.read_exact(&mut checksum_bytes)?;
+        let expected_checksum = u32::from_le_bytes(checksum_bytes);
 
         // Read the length of the data
-        let mut len = [0u8; 8];
-        self.reader.read_exact(&mut len)?;
-        let len = u64::from_le_bytes(len) as usize;
+        let mut len_bytes = [0u8; 8];
+        reader.read_exact(&mut len_bytes)?;
+        let entry_len = u64::from_le_bytes(len_bytes) as usize;
 
         // Read the actual data
-        let mut serialized_entry = vec![0; len];
-        self.reader.read_exact(&mut serialized_entry)?;
+        let mut serialized_entry = vec![0; entry_len];
+        reader.read_exact(&mut serialized_entry)?;
 
-        // Verify the checksums
+        // Verify the checksum
         let mut hasher = Hasher::new();
         hasher.update(&serialized_entry);
-        if hasher.finalize() != checksum {
+        if hasher.finalize() != expected_checksum {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Checksum mismatch",
@@ -107,6 +112,7 @@ where
 
         let entry: Entry<V> = bincode::deserialize(&serialized_entry)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
         Ok(Some(entry))
     }
 

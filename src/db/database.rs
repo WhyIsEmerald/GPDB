@@ -2,6 +2,7 @@ use crate::db::memtable::MemTable;
 use crate::db::sstable::SSTable;
 use crate::db::wal::Wal;
 use crate::types::{DBKey, LogEntry};
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,7 +16,7 @@ where
     path: PathBuf,
     memtable: MemTable<K, V>,
     wal: Wal<K, V>,
-    sstables: Vec<SSTable<K, V>>,
+    levels: Vec<Vec<SSTable<K, V>>>,
     max_memtable_size: usize,
     memtable_size: usize,
 }
@@ -30,19 +31,16 @@ where
     pub fn open(path: &Path, max_memtable_size: usize) -> io::Result<Self> {
         std::fs::create_dir_all(path)?;
 
-        let mut sstables = Vec::new();
+        let loaded_levels_map = Self::load_levels(path)?;
 
-        for entry in std::fs::read_dir(path)? {
-            let entry = entry?;
-            let entry_path = entry.path();
-            if entry_path.is_file() && entry_path.extension().unwrap_or_default() == "sst" {
-                println!("Loading SSTable: {:?}", entry_path);
-                let sstable = SSTable::open(&path)?;
-                sstables.push(sstable);
-            }
+        let mut levels: Vec<Vec<SSTable<K, V>>> = Vec::new();
+        let max_loaded_level = loaded_levels_map.keys().max().copied().unwrap_or(0);
+        levels.resize_with(max_loaded_level + 1, Vec::new); // Pre-allocate to max_loaded_level + 1
+
+        for (level_idx, mut sstables_in_level) in loaded_levels_map {
+            sstables_in_level.sort_by(|a, b| a.path().cmp(&b.path()));
+            levels[level_idx] = sstables_in_level;
         }
-
-        sstables.sort_by(|a, b| a.path().cmp(&b.path()));
 
         let wal_path = path.join("wal.log");
         let mut memtable = MemTable::new();
@@ -73,10 +71,58 @@ where
             path: path.to_path_buf(),
             memtable,
             wal,
-            sstables,
+            levels: vec![Vec::new()],
             max_memtable_size,
             memtable_size: 0,
         })
+    }
+
+    /// Load levels from disk.
+    fn load_levels(path: &Path) -> io::Result<BTreeMap<usize, Vec<SSTable<K, V>>>>
+    where
+        K: DBKey,
+        V: serde::Serialize + serde::de::DeserializeOwned,
+    {
+        let mut loaded_levels_map: BTreeMap<usize, Vec<SSTable<K, V>>> = BTreeMap::new();
+
+        for entry_result in std::fs::read_dir(path)? {
+            let entry = entry_result?;
+            let entry_path: PathBuf = entry.path();
+            if !entry_path.is_file() || entry_path.extension().map_or(false, |ext| ext != "sst") {
+                continue; // Skip non-SSTable files
+            }
+
+            if let Some(filename) = entry_path.file_name().and_then(|name| name.to_str()) {
+                let parts: Vec<&str> = filename.split('-').collect();
+                if !parts.len() == 2 && parts[0].starts_with('L') {
+                    eprintln!(
+                        "Warning: Unexpected SSTable filename format: {:?}",
+                        filename
+                    );
+                }
+                let level_str = &parts[0][1..]; // "L0" -> "0"
+                if let Ok(level_idx) = level_str.parse::<usize>() {
+                    println!("Loading SSTable: {:?}", entry_path);
+                    let sstable = SSTable::open(&entry_path)?;
+                    loaded_levels_map
+                        .entry(level_idx)
+                        .or_default()
+                        .push(sstable);
+                } else {
+                    eprintln!(
+                        "Warning: Failed to parse level index from filename: {:?}",
+                        filename
+                    );
+                }
+            } else {
+                eprintln!(
+                    "Warning: Invalid SSTable filename (not UTF-8?): {:?}",
+                    entry_path
+                );
+            }
+        }
+
+        Ok(loaded_levels_map)
     }
 
     /// Puts a key-value pair into the database.
@@ -114,12 +160,14 @@ where
         }
 
         // Check the SSTables, from newest to oldest
-        for sstable in self.sstables.iter().rev() {
-            if let Some(entry) = sstable.get(key)? {
-                if entry.is_tombstone {
-                    return Ok(None);
+        for level_sstables in self.levels.iter() {
+            for sstable in level_sstables.iter().rev() {
+                if let Some(entry) = sstable.get(key)? {
+                    if entry.is_tombstone {
+                        return Ok(None);
+                    }
+                    return Ok(entry.value);
                 }
-                return Ok(entry.value);
             }
         }
 
@@ -130,7 +178,7 @@ where
     fn flush_memtable(&mut self) -> io::Result<()> {
         println!("MemTable has reached size limit, flushing to SSTable...");
         let sstable_path = self.path.join(format!(
-            "{:020}.sst",
+            "L0-{:020}.sst",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -138,7 +186,8 @@ where
         ));
 
         let new_sstable = SSTable::write_from_memtable(&sstable_path, &self.memtable)?;
-        self.sstables.push(new_sstable);
+        self.levels[0].push(new_sstable);
+        self.levels[0].sort_by(|a, b| a.path().cmp(&b.path()));
 
         self.memtable.clear();
         self.memtable_size = 0;

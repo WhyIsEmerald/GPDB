@@ -7,3 +7,4 @@ edition = "2024"
 bincode = "1.3.3"
 crc32fast = "1.5.0"
 serde = { version = "1.0.228", features = ["derive", "rc"] }
+tempfile = "3.25.0"

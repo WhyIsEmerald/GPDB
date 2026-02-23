@@ -3,7 +3,7 @@ use std::cmp::Ord;
 use std::hash::Hash;
 use std::sync::Arc;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 /// Entry stores the value for a key in the database together with a tombstone flag.
 ///
 /// `value` contains the actual stored data of generic type `V`. `is_tombstone` is set to
@@ -35,7 +35,7 @@ pub trait DBKey: Eq + Hash + Ord + Clone + Serialize + DeserializeOwned {}
 
 impl<T> DBKey for T where T: Eq + Hash + Ord + Clone + Serialize + DeserializeOwned {}
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub enum LogEntry<K, V> {
     Put(K, Arc<V>),
     Delete(K),

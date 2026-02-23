@@ -77,6 +77,11 @@ where
         &self.path
     }
 
+    /// Returns the number of entries in this SSTable.
+    pub fn len(&self) -> usize {
+        self.index.len()
+    }
+
     /// Retrieves an Entry for a given key from SSTable file on disk.
     pub fn get(&self, key: &K) -> io::Result<Option<Entry<V>>> {
         let offset = match self.index.get(key) {
@@ -132,8 +137,8 @@ where
             let checksum = hasher.finalize();
             let len = serialized_entry.len() as u64;
 
-            writer.write_all(&len.to_le_bytes())?;
             writer.write_all(&checksum.to_le_bytes())?;
+            writer.write_all(&len.to_le_bytes())?;
             writer.write_all(&serialized_entry)?;
 
             index.insert(key.clone(), current_offset);

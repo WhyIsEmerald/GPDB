@@ -158,3 +158,70 @@ where
         Self::open(path)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::memtable::MemTable;
+    use crate::types::DBKey;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    fn setup() -> (TempDir, PathBuf) {
+        let tmp_dir = TempDir::new().expect("Failed to create temporary directory");
+        let sstable_path = tmp_dir.path().join("L0-00001.sst");
+        (tmp_dir, sstable_path)
+    }
+
+    #[test]
+    fn write_and_open() {
+        let (_tmp_dir, sstable_path) = setup();
+        let mut memtable: MemTable<String, String> = MemTable::new();
+        memtable.put("key1".to_string(), Arc::new("value1".to_string()));
+        memtable.put("key2".to_string(), Arc::new("value2".to_string()));
+        let sstable: SSTable<String, String> =
+            SSTable::write_from_memtable(&sstable_path, &memtable)
+                .expect("Failed to write to SSTable");
+
+        assert_eq!(sstable.len(), 2);
+
+        let sstable: SSTable<String, String> =
+            SSTable::open(&sstable_path).expect("Failed to open SSTable");
+        assert_eq!(sstable.len(), 2);
+        assert!(sstable.index.contains_key("key1"));
+        assert!(sstable.index.contains_key("key2"));
+    }
+
+    #[test]
+    fn get() {
+        let (_tmp_dir, sstable_path) = setup();
+        let mut memtable: MemTable<String, String> = MemTable::new();
+        memtable.put("key1".to_string(), Arc::new("value1".to_string()));
+        memtable.delete("key2".to_string());
+        let sstable: SSTable<String, String> =
+            SSTable::write_from_memtable(&sstable_path, &memtable)
+                .expect("Failed to write to SSTable");
+
+        assert_eq!(sstable.len(), 2);
+
+        let sstable: SSTable<String, String> =
+            SSTable::open(&sstable_path).expect("Failed to open SSTable");
+
+        let entry1 = sstable
+            .get(&"key1".to_string())
+            .expect("Failed to get k1")
+            .expect("k1 not found");
+        assert_eq!(entry1.value.unwrap().as_ref(), &"value1".to_string());
+        assert!(!entry1.is_tombstone);
+
+        let entry2 = sstable
+            .get(&"key2".to_string())
+            .expect("Failed to get k2")
+            .expect("k2 not found");
+        assert!(entry2.is_tombstone);
+        assert_eq!(entry2.value, None);
+
+        let entry3 = sstable.get(&"key3".to_string()).expect("Failed to get k3");
+        assert!(entry3.is_none());
+    }
+}

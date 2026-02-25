@@ -29,7 +29,7 @@ GPDB is designed to be used as a library within Rust projects. While the project
 
 ## Contributing
 
-Contributions are welcome! If you're an external developer looking to contribute, please refer to our [[03-projects/GPDB/CONTRIBUTING|Contribution Guide]] for details on our workflow and coding standards.
+Contributions are welcome! If you're an external developer looking to contribute, please refer to our [Contributing](CONTRIBUTING.md) for details on our workflow and coding standards.
 
 ## Project Status
 

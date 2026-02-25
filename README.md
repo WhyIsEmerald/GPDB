@@ -43,6 +43,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Contact
 
-Author Name - [WhyIsEmerald]([https://twitter.com/twitter_handle](https://github.com/WhyIsEmerald)) - WhyIsEmerald@proton.me
+Author Name - [WhyIsEmerald](https://github.com/WhyIsEmerald) - WhyIsEmerald@proton.me
 
 Project Link: [https://github.com/WhyIsEmerald/GPDB](https://github.com/WhyIsEmerald/GPDB)

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::cmp::Ord;
 use std::hash::Hash;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -39,4 +40,11 @@ impl<T> DBKey for T where T: Eq + Hash + Ord + Clone + Serialize + DeserializeOw
 pub enum LogEntry<K, V> {
     Put(K, Arc<V>),
     Delete(K),
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+pub enum ManifestEntry {
+    AddSSTable { level: usize, path: PathBuf },
+    RemoveSSTable { level: usize, path: PathBuf },
+    NextID(u64),
 }

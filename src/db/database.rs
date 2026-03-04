@@ -1,7 +1,8 @@
+use crate::db::manifest::Manifest;
 use crate::db::memtable::MemTable;
 use crate::db::sstable::SSTable;
 use crate::db::wal::Wal;
-use crate::types::{DBKey, LogEntry};
+use crate::types::{DBKey, LogEntry, ManifestEntry};
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -16,7 +17,9 @@ where
     path: PathBuf,
     memtable: MemTable<K, V>,
     wal: Wal<K, V>,
+    manifest: Manifest,
     levels: Vec<Vec<SSTable<K, V>>>,
+    next_id: u64,
     max_memtable_size: usize,
     memtable_size: usize,
 }
@@ -27,19 +30,45 @@ where
     V: serde::Serialize + serde::de::DeserializeOwned,
 {
     /// Opens the database at a given path.
-    /// This will recover from the WAL if it exists.
+    /// This will recover state from the Manifest and data from the WAL.
     pub fn open(path: &Path, max_memtable_size: usize) -> io::Result<Self> {
         std::fs::create_dir_all(path)?;
 
-        let loaded_levels_map = Self::load_levels(path)?;
+        let manifest_path = path.join("MANIFEST");
+        let mut manifest = if manifest_path.exists() {
+            Manifest::open(manifest_path)?
+        } else {
+            Manifest::create(manifest_path)?
+        };
 
-        let mut levels: Vec<Vec<SSTable<K, V>>> = Vec::new();
-        let max_loaded_level = loaded_levels_map.keys().max().copied().unwrap_or(0);
-        levels.resize_with(max_loaded_level + 1, Vec::new); // Pre-allocate to max_loaded_level + 1
+        let mut levels: Vec<Vec<SSTable<K, V>>> = vec![Vec::new()];
+        let mut next_id = 0;
 
-        for (level_idx, mut sstables_in_level) in loaded_levels_map {
-            sstables_in_level.sort_by(|a, b| a.path().cmp(&b.path()));
-            levels[level_idx] = sstables_in_level;
+        // Replay manifest to recover state
+        for record_result in manifest.iter()? {
+            let record = record_result?;
+            match record {
+                ManifestEntry::AddSSTable { level, path } => {
+                    if level >= levels.len() {
+                        levels.resize_with(level + 1, Vec::new);
+                    }
+                    let sstable = SSTable::open(&path)?;
+                    levels[level].push(sstable);
+                }
+                ManifestEntry::RemoveSSTable { level, path } => {
+                    if let Some(level_sstables) = levels.get_mut(level) {
+                        level_sstables.retain(|sst| sst.path() != path);
+                    }
+                }
+                ManifestEntry::NextID(id) => {
+                    next_id = id;
+                }
+            }
+        }
+
+        // Sort SSTables within each level by ID (which is sequential)
+        for level_sstables in &mut levels {
+            level_sstables.sort_by_key(|sst| sst.id());
         }
 
         let wal_path = path.join("wal.log");
@@ -60,7 +89,6 @@ where
                     }
                 }
             }
-            // After successful recovery, re-open the WAL in append mode.
             wal = Wal::open(&wal_path)?;
         } else {
             println!("Creating new WAL: {:?}", wal_path);
@@ -71,62 +99,15 @@ where
             path: path.to_path_buf(),
             memtable,
             wal,
-            levels: vec![Vec::new()],
+            manifest,
+            levels,
+            next_id,
             max_memtable_size,
             memtable_size: 0,
         })
     }
 
-    /// Load levels from disk.
-    fn load_levels(path: &Path) -> io::Result<BTreeMap<usize, Vec<SSTable<K, V>>>>
-    where
-        K: DBKey,
-        V: serde::Serialize + serde::de::DeserializeOwned,
-    {
-        let mut loaded_levels_map: BTreeMap<usize, Vec<SSTable<K, V>>> = BTreeMap::new();
-
-        for entry_result in std::fs::read_dir(path)? {
-            let entry = entry_result?;
-            let entry_path: PathBuf = entry.path();
-            if !entry_path.is_file() || entry_path.extension().map_or(false, |ext| ext != "sst") {
-                continue; // Skip non-SSTable files
-            }
-
-            if let Some(filename) = entry_path.file_name().and_then(|name| name.to_str()) {
-                let parts: Vec<&str> = filename.split('-').collect();
-                if !parts.len() == 2 && parts[0].starts_with('L') {
-                    eprintln!(
-                        "Warning: Unexpected SSTable filename format: {:?}",
-                        filename
-                    );
-                }
-                let level_str = &parts[0][1..]; // "L0" -> "0"
-                if let Ok(level_idx) = level_str.parse::<usize>() {
-                    println!("Loading SSTable: {:?}", entry_path);
-                    let sstable = SSTable::open(&entry_path)?;
-                    loaded_levels_map
-                        .entry(level_idx)
-                        .or_default()
-                        .push(sstable);
-                } else {
-                    eprintln!(
-                        "Warning: Failed to parse level index from filename: {:?}",
-                        filename
-                    );
-                }
-            } else {
-                eprintln!(
-                    "Warning: Invalid SSTable filename (not UTF-8?): {:?}",
-                    entry_path
-                );
-            }
-        }
-
-        Ok(loaded_levels_map)
-    }
-
     /// Puts a key-value pair into the database.
-    /// The operation is first written to the WAL for durability, then applied to the MemTable.
     pub fn put(&mut self, key: K, value: V) -> io::Result<()> {
         let value_size = std::mem::size_of_val(&value);
         let key_size = std::mem::size_of_val(&key);
@@ -144,7 +125,6 @@ where
     }
 
     /// Deletes a key from the database.
-    /// A tombstone is written to the WAL and MemTable.
     pub fn delete(&mut self, key: K) -> io::Result<()> {
         let log_entry = LogEntry::Delete(key.clone());
         self.wal.append(&log_entry)?;
@@ -174,26 +154,38 @@ where
         Ok(None)
     }
 
-    /// Flushes the MemTable to an SSTable.
+    /// Flushes the MemTable to an SSTable and updates the Manifest.
     fn flush_memtable(&mut self) -> io::Result<()> {
         println!("MemTable has reached size limit, flushing to SSTable...");
-        let sstable_path = self.path.join(format!(
-            "L0-{:020}.sst",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        
+        let id = self.next_id;
+        let sstable_path = self.path.join(format!("L0-{:020}.sst", id));
 
-        let new_sstable = SSTable::write_from_memtable(&sstable_path, &self.memtable)?;
+        // 1. Write SSTable
+        let new_sstable = SSTable::write_from_memtable(&sstable_path, &self.memtable, id)?;
+        
+        // 2. Update Manifest BEFORE updating in-memory state
+        self.manifest.append(&ManifestEntry::AddSSTable {
+            level: 0,
+            path: sstable_path.clone(),
+        })?;
+        self.next_id += 1;
+        self.manifest.append(&ManifestEntry::NextID(self.next_id))?;
+        self.manifest.flush()?;
+
+        // 3. Update in-memory SSTable list
+        if self.levels.is_empty() {
+            self.levels.push(Vec::new());
+        }
         self.levels[0].push(new_sstable);
-        self.levels[0].sort_by(|a, b| a.path().cmp(&b.path()));
+        self.levels[0].sort_by_key(|sst| sst.id());
 
+        // 4. Clear MemTable and WAL
         self.memtable.clear();
         self.memtable_size = 0;
-
         self.wal.clear()?;
 
+        println!("MemTable flushed successfully to {:?}", sstable_path);
         Ok(())
     }
 }

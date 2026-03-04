@@ -2,17 +2,17 @@ use crate::db::memtable::MemTable;
 use crate::types::{DBKey, Entry};
 use bincode;
 use crc32fast::Hasher;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
-/// The fixed size of the footer (24bytes)
+/// The fixed size of the footer (32 bytes)
 ///
-/// Contains (index_offset: u64, index_size: u64, magic_number: u64)
-const FOOTER_SIZE: u64 = 8 + 8 + 8;
+/// Contains (index_offset: u64, index_size: u64, id: u64, magic_number: u64)
+const FOOTER_SIZE: u64 = 8 + 8 + 8 + 8;
 /// Unique identifier for sstable files
 const MAGIC_NUMBER: u64 = 0xDEADC0DEBEEFCAFE;
 
@@ -24,6 +24,7 @@ where
     path: PathBuf,
     reader: BufReader<File>,
     index: BTreeMap<K, u64>,
+    id: u64,
     _phantom: PhantomData<(K, V)>,
 }
 
@@ -32,7 +33,7 @@ where
     K: DBKey,
     V: Serialize + DeserializeOwned,
 {
-    /// Opens an exisisting SSTable file and loads it into memory.
+    /// Opens an existing SSTable file and loads it into memory.
     pub fn open(path: &Path) -> io::Result<Self> {
         let file = OpenOptions::new().read(true).open(path)?;
         let mut reader = BufReader::new(file);
@@ -51,6 +52,8 @@ where
         reader.read_exact(&mut buf)?;
         let index_size = u64::from_le_bytes(buf);
         reader.read_exact(&mut buf)?;
+        let id = u64::from_le_bytes(buf);
+        reader.read_exact(&mut buf)?;
         let magic_number = u64::from_le_bytes(buf);
         if magic_number != MAGIC_NUMBER {
             return Err(io::Error::new(
@@ -64,17 +67,24 @@ where
         reader.read_exact(&mut index_data)?;
         let index: BTreeMap<K, u64> = bincode::deserialize(&index_data)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        return Ok(SSTable {
+
+        Ok(SSTable {
             path: path.to_path_buf(),
             reader,
             index,
+            id,
             _phantom: PhantomData,
-        });
+        })
     }
 
     /// Returns the path of this SSTable file.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Returns the ID of this SSTable.
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     /// Returns the number of entries in this SSTable.
@@ -123,7 +133,7 @@ where
 
     /// Writes a new SSTable from the contents of a MemTable.
     /// Returns the opened SSTable instance.
-    pub fn write_from_memtable(path: &Path, memtable: &MemTable<K, V>) -> io::Result<Self> {
+    pub fn write_from_memtable(path: &Path, memtable: &MemTable<K, V>, id: u64) -> io::Result<Self> {
         let file = OpenOptions::new().write(true).create_new(true).open(path)?;
         let mut writer = BufWriter::new(file);
         let mut index = BTreeMap::new();
@@ -152,6 +162,7 @@ where
         writer.write_all(&serialized_index)?;
         writer.write_all(&index_offset.to_le_bytes())?;
         writer.write_all(&index_size.to_le_bytes())?;
+        writer.write_all(&id.to_le_bytes())?;
         writer.write_all(&MAGIC_NUMBER.to_le_bytes())?;
         writer.flush()?;
 
@@ -180,14 +191,16 @@ mod tests {
         memtable.put("key1".to_string(), Arc::new("value1".to_string()));
         memtable.put("key2".to_string(), Arc::new("value2".to_string()));
         let sstable: SSTable<String, String> =
-            SSTable::write_from_memtable(&sstable_path, &memtable)
+            SSTable::write_from_memtable(&sstable_path, &memtable, 1)
                 .expect("Failed to write to SSTable");
 
         assert_eq!(sstable.len(), 2);
+        assert_eq!(sstable.id(), 1);
 
         let sstable: SSTable<String, String> =
             SSTable::open(&sstable_path).expect("Failed to open SSTable");
         assert_eq!(sstable.len(), 2);
+        assert_eq!(sstable.id(), 1);
         assert!(sstable.index.contains_key("key1"));
         assert!(sstable.index.contains_key("key2"));
     }
@@ -199,7 +212,7 @@ mod tests {
         memtable.put("key1".to_string(), Arc::new("value1".to_string()));
         memtable.delete("key2".to_string());
         let sstable: SSTable<String, String> =
-            SSTable::write_from_memtable(&sstable_path, &memtable)
+            SSTable::write_from_memtable(&sstable_path, &memtable, 1)
                 .expect("Failed to write to SSTable");
 
         assert_eq!(sstable.len(), 2);

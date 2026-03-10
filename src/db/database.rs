@@ -3,7 +3,6 @@ use crate::db::memtable::MemTable;
 use crate::db::sstable::SSTable;
 use crate::db::wal::Wal;
 use crate::types::{DBKey, LogEntry, ManifestEntry};
-use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,7 +34,7 @@ where
         std::fs::create_dir_all(path)?;
 
         let manifest_path = path.join("MANIFEST");
-        let mut manifest = if manifest_path.exists() {
+        let manifest = if manifest_path.exists() {
             Manifest::open(manifest_path)?
         } else {
             Manifest::create(manifest_path)?
@@ -157,13 +156,13 @@ where
     /// Flushes the MemTable to an SSTable and updates the Manifest.
     fn flush_memtable(&mut self) -> io::Result<()> {
         println!("MemTable has reached size limit, flushing to SSTable...");
-        
+
         let id = self.next_id;
         let sstable_path = self.path.join(format!("L0-{:020}.sst", id));
 
         // 1. Write SSTable
         let new_sstable = SSTable::write_from_memtable(&sstable_path, &self.memtable, id)?;
-        
+
         // 2. Update Manifest BEFORE updating in-memory state
         self.manifest.append(&ManifestEntry::AddSSTable {
             level: 0,

@@ -1,8 +1,8 @@
-use crate::types::ManifestEntry;
+use crate::ManifestEntry;
 use crc32fast::Hasher;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub struct Manifest {
     path: PathBuf,

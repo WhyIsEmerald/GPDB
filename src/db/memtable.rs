@@ -1,4 +1,4 @@
-use crate::types::{DBKey, Entry};
+use crate::{DBKey, Entry};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -80,10 +80,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Entry;
-    use serde::{Deserialize, Serialize};
-    use std::cmp::{Ordering, PartialOrd};
-    use std::hash::{Hash, Hasher};
     use std::sync::Arc;
 
     #[test]

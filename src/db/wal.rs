@@ -1,4 +1,4 @@
-use crate::types::LogEntry;
+use crate::LogEntry;
 use crc32fast::Hasher;
 use serde::{Serialize, de::DeserializeOwned};
 use std::fs::{File, OpenOptions};
@@ -172,7 +172,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::LogEntry;
     use std::{io::Seek, sync::Arc};
     use tempfile::TempDir;
 

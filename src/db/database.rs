@@ -1,8 +1,4 @@
-use crate::db::manifest::Manifest;
-use crate::db::memtable::MemTable;
-use crate::db::sstable::SSTable;
-use crate::db::wal::Wal;
-use crate::types::{DBKey, LogEntry, ManifestEntry};
+use crate::{Manifest, MemTable, SSTable, Wal, DBKey, LogEntry, ManifestEntry};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

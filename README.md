@@ -35,7 +35,7 @@ Contributions are welcome! If you're an external developer looking to contribute
 
 GPDB is currently in **Phase 1: Core Storage Engine**. 
 *   **Completed:** MemTable (Dual-structure), WAL (Log-structured), SSTable (Basic Read/Write), and Leveled Structure design.
-*   **In Progress:** Manifest file implementation for database metadata and the Compaction Coordinator.
+*   **In Progress:** Manifest file implementation for database metadata and the compaction.
 
 ## License
 

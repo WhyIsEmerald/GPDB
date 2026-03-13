@@ -1,5 +1,4 @@
-use crate::db::memtable::MemTable;
-use crate::types::{DBKey, Entry};
+use crate::{MemTable, DBKey, Entry};
 use bincode;
 use crc32fast::Hasher;
 use serde::{de::DeserializeOwned, Serialize};
@@ -173,8 +172,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::memtable::MemTable;
-    use crate::types::DBKey;
     use std::sync::Arc;
     use tempfile::TempDir;
 

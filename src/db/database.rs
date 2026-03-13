@@ -1,7 +1,10 @@
-use crate::{Manifest, MemTable, SSTable, Wal, DBKey, LogEntry, ManifestEntry};
+use crate::{Manifest, MemTable, SSTable, Wal, DBKey, LogEntry, ManifestEntry, SSTableId, Result};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+const MANIFEST_FILE_NAME: &str = "MANIFEST";
+const WAL_FILE_NAME: &str = "wal.log";
 
 /// The main database struct, which orchestrates the MemTable, WAL, and SSTables.
 pub struct DB<K, V>
@@ -14,7 +17,7 @@ where
     wal: Wal<K, V>,
     manifest: Manifest,
     levels: Vec<Vec<SSTable<K, V>>>,
-    next_id: u64,
+    next_id: SSTableId,
     max_memtable_size: usize,
     memtable_size: usize,
 }
@@ -26,10 +29,19 @@ where
 {
     /// Opens the database at a given path.
     /// This will recover state from the Manifest and data from the WAL.
-    pub fn open(path: &Path, max_memtable_size: usize) -> io::Result<Self> {
+    /// 
+    /// # Example
+    /// ```
+    /// # use gpdb::DB;
+    /// # use tempfile::TempDir;
+    /// # let tmp_dir = TempDir::new().unwrap();
+    /// # let path = tmp_dir.path();
+    /// let db: DB<String, String> = DB::open(path, 1024 * 1024).expect("Failed to open DB");
+    /// ```
+    pub fn open(path: &Path, max_memtable_size: usize) -> Result<Self> {
         std::fs::create_dir_all(path)?;
 
-        let manifest_path = path.join("MANIFEST");
+        let manifest_path = path.join(MANIFEST_FILE_NAME);
         let manifest = if manifest_path.exists() {
             Manifest::open(manifest_path)?
         } else {
@@ -37,11 +49,11 @@ where
         };
 
         let mut levels: Vec<Vec<SSTable<K, V>>> = vec![Vec::new()];
-        let mut next_id = 0;
+        let mut next_id = SSTableId(0);
 
         // Replay manifest to recover state
         for record_result in manifest.iter()? {
-            let record = record_result?;
+            let record = record_result.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             match record {
                 ManifestEntry::AddSSTable { level, path } => {
                     if level >= levels.len() {
@@ -66,15 +78,14 @@ where
             level_sstables.sort_by_key(|sst| sst.id());
         }
 
-        let wal_path = path.join("wal.log");
+        let wal_path = path.join(WAL_FILE_NAME);
         let mut memtable = MemTable::new();
         let wal: Wal<K, V>;
 
         if wal_path.exists() {
-            println!("Recovering from WAL: {:?}", wal_path);
             let existing_wal = Wal::open(&wal_path)?;
             for entry_result in existing_wal.iter()? {
-                let entry = entry_result?;
+                let entry = entry_result.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 match entry {
                     LogEntry::Put(k, v) => {
                         memtable.put(k, v);
@@ -86,7 +97,6 @@ where
             }
             wal = Wal::open(&wal_path)?;
         } else {
-            println!("Creating new WAL: {:?}", wal_path);
             wal = Wal::create(&wal_path)?;
         }
 
@@ -103,7 +113,17 @@ where
     }
 
     /// Puts a key-value pair into the database.
-    pub fn put(&mut self, key: K, value: V) -> io::Result<()> {
+    ///
+    /// # Example
+    /// ```
+    /// # use gpdb::DB;
+    /// # use tempfile::TempDir;
+    /// # let tmp_dir = TempDir::new().unwrap();
+    /// # let path = tmp_dir.path();
+    /// let mut db = DB::open(path, 1024 * 1024).unwrap();
+    /// db.put("key".to_string(), "value".to_string()).unwrap();
+    /// ```
+    pub fn put(&mut self, key: K, value: V) -> Result<()> {
         let value_size = std::mem::size_of_val(&value);
         let key_size = std::mem::size_of_val(&key);
         let arc_value = Arc::new(value);
@@ -120,7 +140,7 @@ where
     }
 
     /// Deletes a key from the database.
-    pub fn delete(&mut self, key: K) -> io::Result<()> {
+    pub fn delete(&mut self, key: K) -> Result<()> {
         let log_entry = LogEntry::Delete(key.clone());
         self.wal.append(&log_entry)?;
         self.wal.flush()?;
@@ -129,7 +149,7 @@ where
     }
 
     /// Retrieves a value for a given key from the database.
-    pub fn get(&self, key: &K) -> io::Result<Option<Arc<V>>> {
+    pub fn get(&self, key: &K) -> Result<Option<Arc<V>>> {
         if let Some(value_arc) = self.memtable.get(key) {
             return Ok(Some(value_arc));
         }
@@ -150,11 +170,9 @@ where
     }
 
     /// Flushes the MemTable to an SSTable and updates the Manifest.
-    fn flush_memtable(&mut self) -> io::Result<()> {
-        println!("MemTable has reached size limit, flushing to SSTable...");
-
+    fn flush_memtable(&mut self) -> Result<()> {
         let id = self.next_id;
-        let sstable_path = self.path.join(format!("L0-{:020}.sst", id));
+        let sstable_path = self.path.join(format!("L0-{}.sst", id));
 
         // 1. Write SSTable
         let new_sstable = SSTable::write_from_memtable(&sstable_path, &self.memtable, id)?;
@@ -164,7 +182,7 @@ where
             level: 0,
             path: sstable_path.clone(),
         })?;
-        self.next_id += 1;
+        self.next_id = SSTableId(id.0 + 1);
         self.manifest.append(&ManifestEntry::NextID(self.next_id))?;
         self.manifest.flush()?;
 
@@ -180,7 +198,6 @@ where
         self.memtable_size = 0;
         self.wal.clear()?;
 
-        println!("MemTable flushed successfully to {:?}", sstable_path);
         Ok(())
     }
 }

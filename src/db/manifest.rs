@@ -1,4 +1,4 @@
-use crate::ManifestEntry;
+use crate::{ManifestEntry, Result};
 use crc32fast::Hasher;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Write};
@@ -12,7 +12,7 @@ pub struct Manifest {
 impl Manifest {
     /// Creates a brand new, empty Manifest file.
     /// If a file already exists at the path, it will be truncated (emptied).
-    pub fn create(path: PathBuf) -> io::Result<Self> {
+    pub fn create(path: PathBuf) -> Result<Self> {
         let file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -25,7 +25,7 @@ impl Manifest {
     }
 
     /// Opens an existing Manifest file for appending. Fails if the file does not exist.
-    pub fn open(path: PathBuf) -> io::Result<Self> {
+    pub fn open(path: PathBuf) -> Result<Self> {
         let file = OpenOptions::new().write(true).append(true).open(&path)?;
 
         let writer = BufWriter::new(file);
@@ -35,10 +35,10 @@ impl Manifest {
 
     /// Appends a single `ManifestEntry` to the Manifest's buffer.
     /// This is not guaranteed to be on disk until `flush()` is called.
-    pub fn append(&mut self, entry: &ManifestEntry) -> io::Result<()> {
+    pub fn append(&mut self, entry: &ManifestEntry) -> Result<()> {
         // Serialize the ManifestEntry
         let serialized_entry =
-            bincode::serialize(entry).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            bincode::serialize(entry).map_err(|e| crate::Error::Serialization(e.to_string()))?;
         let entry_len = serialized_entry.len() as u64;
 
         // Calculate the checksum of the data
@@ -55,7 +55,7 @@ impl Manifest {
     }
 
     /// Clears the Manifest's buffer.
-    pub fn clear(&mut self) -> io::Result<()> {
+    pub fn clear(&mut self) -> Result<()> {
         let file = OpenOptions::new()
             .write(true)
             .create(true)
@@ -67,14 +67,15 @@ impl Manifest {
     }
 
     /// Flushes the Manifest's buffer to disk and ensures it's physically synced.
-    pub fn flush(&mut self) -> io::Result<()> {
+    pub fn flush(&mut self) -> Result<()> {
         self.writer.flush()?; // Flush BufWriter's internal buffer
-        self.writer.get_ref().sync_all() // Ensure data is on physical disk
+        self.writer.get_ref().sync_all()?; // Ensure data is on physical disk
+        Ok(())
     }
 
     /// Returns an iterator that can read all manifest entries from the beginning of the file.
     /// This is used for database state recovery on startup.
-    pub fn iter(&self) -> io::Result<ManifestIterator> {
+    pub fn iter(&self) -> Result<ManifestIterator> {
         let file = OpenOptions::new().read(true).open(&self.path)?;
         Ok(ManifestIterator {
             reader: BufReader::new(file),
@@ -88,7 +89,7 @@ pub struct ManifestIterator {
 }
 
 impl Iterator for ManifestIterator {
-    type Item = io::Result<ManifestEntry>;
+    type Item = std::result::Result<ManifestEntry, crate::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // Read checksum (4 bytes)
@@ -97,46 +98,36 @@ impl Iterator for ManifestIterator {
             if e.kind() == io::ErrorKind::UnexpectedEof {
                 return None; // Clean EOF
             }
-            return Some(Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to read checksum: {}", e),
-            )));
+            return Some(Err(crate::Error::Io(e)));
         }
         let expected_checksum = u32::from_le_bytes(checksum_bytes);
 
         // Read record length (8 bytes)
         let mut len_bytes = [0u8; 8];
         if let Err(e) = self.reader.read_exact(&mut len_bytes) {
-            return Some(Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!("Failed to read record length: {}", e),
-            )));
+            return Some(Err(crate::Error::Io(e)));
         }
         let record_len = u64::from_le_bytes(len_bytes) as usize;
 
         // Read serialized record data
         let mut serialized_entry = vec![0; record_len];
         if let Err(e) = self.reader.read_exact(&mut serialized_entry) {
-            return Some(Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!("Failed to read record data: {}", e),
-            )));
+            return Some(Err(crate::Error::Io(e)));
         }
 
         // Verify checksum
         let mut hasher = Hasher::new();
         hasher.update(&serialized_entry);
         if hasher.finalize() != expected_checksum {
-            return Some(Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Manifest record checksum mismatch",
+            return Some(Err(crate::Error::Corruption(
+                "Manifest record checksum mismatch".to_string(),
             )));
         }
 
         // Deserialize entry and return it
         match bincode::deserialize(&serialized_entry) {
             Ok(entry) => Some(Ok(entry)),
-            Err(e) => Some(Err(io::Error::new(io::ErrorKind::InvalidData, e))),
+            Err(e) => Some(Err(crate::Error::Serialization(e.to_string()))),
         }
     }
 }

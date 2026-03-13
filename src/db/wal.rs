@@ -1,4 +1,4 @@
-use crate::LogEntry;
+use crate::{LogEntry, Result, Error};
 use crc32fast::Hasher;
 use serde::{Serialize, de::DeserializeOwned};
 use std::fs::{File, OpenOptions};
@@ -24,7 +24,7 @@ where
 {
     /// Creates a brand new, empty WAL file.
     /// If a file already exists at the path, it will be truncated (emptied).
-    pub fn create(path: &Path) -> io::Result<Self> {
+    pub fn create(path: &Path) -> Result<Self> {
         let file = OpenOptions::new()
             .write(true)
             .create(true)
@@ -39,7 +39,7 @@ where
     }
 
     /// Opens an existing WAL file for appending. Fails if the file does not exist.
-    pub fn open(path: &Path) -> io::Result<Self> {
+    pub fn open(path: &Path) -> Result<Self> {
         let file = OpenOptions::new().write(true).append(true).open(path)?;
 
         Ok(Wal {
@@ -51,10 +51,10 @@ where
 
     /// Appends a single `LogEntry` to the WAL's buffer.
     /// This is not guaranteed to be on disk until `flush()` is called.
-    pub fn append(&mut self, entry: &LogEntry<K, V>) -> io::Result<()> {
+    pub fn append(&mut self, entry: &LogEntry<K, V>) -> Result<()> {
         // Serialize the LogEntry
         let serialized_entry =
-            bincode::serialize(entry).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            bincode::serialize(entry).map_err(|e| Error::Serialization(e.to_string()))?;
         let entry_len = serialized_entry.len() as u64;
 
         // Calculate the checksum of the data
@@ -70,7 +70,7 @@ where
         Ok(())
     }
 
-    pub fn clear(&mut self) -> io::Result<()> {
+    pub fn clear(&mut self) -> Result<()> {
         let file = OpenOptions::new()
             .write(true)
             .create(true)
@@ -83,14 +83,15 @@ where
 
     /// Flushes all buffered writes to the OS and ensures they are written to disk.
     /// This is the "commit" point for durability.
-    pub fn flush(&mut self) -> io::Result<()> {
+    pub fn flush(&mut self) -> Result<()> {
         self.writer.flush()?;
-        self.writer.get_ref().sync_all()
+        self.writer.get_ref().sync_all()?;
+        Ok(())
     }
 
     /// Returns an iterator that can read all log entries from the beginning of the file.
     /// This is used for database recovery on startup.
-    pub fn iter(&self) -> io::Result<WalIterator<K, V>> {
+    pub fn iter(&self) -> Result<WalIterator<K, V>> {
         let file = OpenOptions::new().read(true).open(&self.path)?;
         Ok(WalIterator {
             reader: BufReader::new(file),
@@ -114,7 +115,7 @@ where
     K: Serialize + DeserializeOwned,
     V: Serialize + DeserializeOwned,
 {
-    type Item = io::Result<LogEntry<K, V>>;
+    type Item = std::result::Result<LogEntry<K, V>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // Read checksum (4 bytes)
@@ -125,46 +126,36 @@ where
             if e.kind() == io::ErrorKind::UnexpectedEof {
                 return None; // Clean EOF
             }
-            return Some(Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to read checksum: {}", e),
-            )));
+            return Some(Err(Error::Io(e)));
         }
         let expected_checksum = u32::from_le_bytes(checksum_bytes);
 
         // Read entry length (8 bytes)
         let mut len_bytes = [0u8; 8];
         if let Err(e) = self.reader.read_exact(&mut len_bytes) {
-            return Some(Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof, // Or other error, but EOF is common here
-                format!("Failed to read log entry length: {}", e),
-            )));
+            return Some(Err(Error::Io(e)));
         }
         let entry_len = u64::from_le_bytes(len_bytes) as usize;
 
         // Read serialized entry data
         let mut serialized_entry = vec![0; entry_len];
         if let Err(e) = self.reader.read_exact(&mut serialized_entry) {
-            return Some(Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof, // Or other error
-                format!("Failed to read log entry data: {}", e),
-            )));
+            return Some(Err(Error::Io(e)));
         }
 
         // Verify checksum
         let mut hasher = Hasher::new();
         hasher.update(&serialized_entry);
         if hasher.finalize() != expected_checksum {
-            return Some(Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "WAL entry checksum mismatch",
+            return Some(Err(Error::Corruption(
+                "WAL entry checksum mismatch".to_string(),
             )));
         }
 
         // Deserialize entry and return it
         match bincode::deserialize(&serialized_entry) {
             Ok(entry) => Some(Ok(entry)),
-            Err(e) => Some(Err(io::Error::new(io::ErrorKind::InvalidData, e))),
+            Err(e) => Some(Err(Error::Serialization(e.to_string()))),
         }
     }
 }
@@ -303,6 +294,5 @@ mod tests {
             result.is_err(),
             "Expected an error due to checksum mismatch"
         );
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
     }
 }

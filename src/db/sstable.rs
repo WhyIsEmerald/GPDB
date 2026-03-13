@@ -1,12 +1,13 @@
-use crate::{MemTable, DBKey, Entry};
+use crate::{MemTable, DBKey, Entry, SSTableId, Result, Error};
 use bincode;
 use crc32fast::Hasher;
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write, BufWriter};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// The fixed size of the footer (32 bytes)
 ///
@@ -21,9 +22,10 @@ where
     V: Serialize + DeserializeOwned,
 {
     path: PathBuf,
-    reader: BufReader<File>,
+    // Mutex allows interior mutability so we can seek/read while having a &self reference
+    reader: Mutex<BufReader<File>>,
     index: BTreeMap<K, u64>,
-    id: u64,
+    id: SSTableId,
     _phantom: PhantomData<(K, V)>,
 }
 
@@ -32,15 +34,14 @@ where
     K: DBKey,
     V: Serialize + DeserializeOwned,
 {
-    /// Opens an existing SSTable file and loads it into memory.
-    pub fn open(path: &Path) -> io::Result<Self> {
+    /// Opens an existing SSTable file and loads its index into memory.
+    pub fn open(path: &Path) -> Result<Self> {
         let file = OpenOptions::new().read(true).open(path)?;
         let mut reader = BufReader::new(file);
         let file_len = reader.seek(SeekFrom::End(0))?;
         if file_len < FOOTER_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "SSTable is too small to contain a valid footer",
+            return Err(Error::Corruption(
+                "SSTable is too small to contain a valid footer".to_string(),
             ));
         }
         reader.seek(SeekFrom::End(-(FOOTER_SIZE as i64)))?;
@@ -51,25 +52,22 @@ where
         reader.read_exact(&mut buf)?;
         let index_size = u64::from_le_bytes(buf);
         reader.read_exact(&mut buf)?;
-        let id = u64::from_le_bytes(buf);
+        let id = SSTableId(u64::from_le_bytes(buf));
         reader.read_exact(&mut buf)?;
         let magic_number = u64::from_le_bytes(buf);
         if magic_number != MAGIC_NUMBER {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Invalid magic number",
-            ));
+            return Err(Error::Corruption("Invalid magic number".to_string()));
         }
 
         reader.seek(SeekFrom::Start(index_offset))?;
         let mut index_data = vec![0; index_size as usize];
         reader.read_exact(&mut index_data)?;
         let index: BTreeMap<K, u64> = bincode::deserialize(&index_data)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            .map_err(|e| Error::Serialization(e.to_string()))?;
 
         Ok(SSTable {
             path: path.to_path_buf(),
-            reader,
+            reader: Mutex::new(reader),
             index,
             id,
             _phantom: PhantomData,
@@ -82,7 +80,7 @@ where
     }
 
     /// Returns the ID of this SSTable.
-    pub fn id(&self) -> u64 {
+    pub fn id(&self) -> SSTableId {
         self.id
     }
 
@@ -92,12 +90,14 @@ where
     }
 
     /// Retrieves an Entry for a given key from SSTable file on disk.
-    pub fn get(&self, key: &K) -> io::Result<Option<Entry<V>>> {
+    pub fn get(&self, key: &K) -> Result<Option<Entry<V>>> {
         let offset = match self.index.get(key) {
             Some(offset) => *offset,
             None => return Ok(None),
         };
-        let mut reader = BufReader::new(File::open(&self.path)?);
+
+        // Lock the reader and seek to the entry offset
+        let mut reader = self.reader.lock().map_err(|_| Error::Corruption("Lock poisoned".to_string()))?;
         reader.seek(SeekFrom::Start(offset))?;
 
         // Read the checksum
@@ -118,21 +118,18 @@ where
         let mut hasher = Hasher::new();
         hasher.update(&serialized_entry);
         if hasher.finalize() != expected_checksum {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Checksum mismatch",
-            ));
+            return Err(Error::Corruption("Checksum mismatch".to_string()));
         }
 
         let entry: Entry<V> = bincode::deserialize(&serialized_entry)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            .map_err(|e| Error::Serialization(e.to_string()))?;
 
         Ok(Some(entry))
     }
 
     /// Writes a new SSTable from the contents of a MemTable.
     /// Returns the opened SSTable instance.
-    pub fn write_from_memtable(path: &Path, memtable: &MemTable<K, V>, id: u64) -> io::Result<Self> {
+    pub fn write_from_memtable(path: &Path, memtable: &MemTable<K, V>, id: SSTableId) -> Result<Self> {
         let file = OpenOptions::new().write(true).create_new(true).open(path)?;
         let mut writer = BufWriter::new(file);
         let mut index = BTreeMap::new();
@@ -140,7 +137,7 @@ where
         let mut current_offset = 0;
         for (key, entry) in memtable.iter() {
             let serialized_entry = bincode::serialize(entry)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                .map_err(|e| Error::Serialization(e.to_string()))?;
             let mut hasher = Hasher::new();
             hasher.update(&serialized_entry);
             let checksum = hasher.finalize();
@@ -155,13 +152,13 @@ where
         }
         let index_offset = current_offset;
         let serialized_index = bincode::serialize(&index)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            .map_err(|e| Error::Serialization(e.to_string()))?;
 
         let index_size = serialized_index.len() as u64;
         writer.write_all(&serialized_index)?;
         writer.write_all(&index_offset.to_le_bytes())?;
         writer.write_all(&index_size.to_le_bytes())?;
-        writer.write_all(&id.to_le_bytes())?;
+        writer.write_all(&id.0.to_le_bytes())?;
         writer.write_all(&MAGIC_NUMBER.to_le_bytes())?;
         writer.flush()?;
 
@@ -188,16 +185,16 @@ mod tests {
         memtable.put("key1".to_string(), Arc::new("value1".to_string()));
         memtable.put("key2".to_string(), Arc::new("value2".to_string()));
         let sstable: SSTable<String, String> =
-            SSTable::write_from_memtable(&sstable_path, &memtable, 1)
+            SSTable::write_from_memtable(&sstable_path, &memtable, SSTableId(1))
                 .expect("Failed to write to SSTable");
 
         assert_eq!(sstable.len(), 2);
-        assert_eq!(sstable.id(), 1);
+        assert_eq!(sstable.id(), SSTableId(1));
 
         let sstable: SSTable<String, String> =
             SSTable::open(&sstable_path).expect("Failed to open SSTable");
         assert_eq!(sstable.len(), 2);
-        assert_eq!(sstable.id(), 1);
+        assert_eq!(sstable.id(), SSTableId(1));
         assert!(sstable.index.contains_key("key1"));
         assert!(sstable.index.contains_key("key2"));
     }
@@ -209,7 +206,7 @@ mod tests {
         memtable.put("key1".to_string(), Arc::new("value1".to_string()));
         memtable.delete("key2".to_string());
         let sstable: SSTable<String, String> =
-            SSTable::write_from_memtable(&sstable_path, &memtable, 1)
+            SSTable::write_from_memtable(&sstable_path, &memtable, SSTableId(1))
                 .expect("Failed to write to SSTable");
 
         assert_eq!(sstable.len(), 2);

@@ -136,6 +136,40 @@ where
 
         Self::open(path)
     }
+
+    /// Returns an iterator over the full entries in the SSTable.
+    pub fn iter(&self) -> Result<SSTableIterator<K, V>> {
+        let file = File::open(&self.path)?;
+        Ok(SSTableIterator {
+            reader: BufReader::new(file),
+            end_offset: self.index_offset,
+            _phantom: PhantomData,
+        })
+    }
+}
+
+pub struct SSTableIterator<K, V> {
+    reader: BufReader<File>,
+    end_offset: u64,
+    _phantom: PhantomData<(K, V)>,
+}
+
+impl<K, V> Iterator for SSTableIterator<K, V>
+where
+    K: DBKey,
+    V: Serialize + DeserializeOwned,
+{
+    type Item = Result<Entry<K, V>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Stop if we've reached the start of the index block
+        let current_pos = self.reader.stream_position().ok()?;
+        if current_pos >= self.end_offset {
+            return None;
+        }
+
+        read_record(&mut self.reader).transpose()
+    }
 }
 
 #[cfg(test)]
@@ -202,5 +236,33 @@ mod tests {
 
         let entry3 = sstable.get(&"key3".to_string()).expect("Failed to get k3");
         assert!(entry3.is_none());
+    }
+
+    #[test]
+    fn iteration() {
+        let (_tmp_dir, sstable_path) = setup();
+        let mut memtable: MemTable<String, String> = MemTable::new();
+        memtable.put("k1".to_string(), Arc::new("v1".to_string()));
+        memtable.put("k2".to_string(), Arc::new("v2".to_string()));
+        memtable.delete("k3".to_string());
+        
+        let sstable: SSTable<String, String> =
+            SSTable::write_from_memtable(&sstable_path, &memtable, SSTableId(1)).unwrap();
+
+        let mut iter = sstable.iter().unwrap();
+
+        let e1 = iter.next().unwrap().unwrap();
+        assert_eq!(e1.key, "k1");
+        assert_eq!(e1.value.value.unwrap().as_str(), "v1");
+
+        let e2 = iter.next().unwrap().unwrap();
+        assert_eq!(e2.key, "k2");
+        assert_eq!(e2.value.value.unwrap().as_str(), "v2");
+
+        let e3 = iter.next().unwrap().unwrap();
+        assert_eq!(e3.key, "k3");
+        assert!(e3.value.is_tombstone);
+
+        assert!(iter.next().is_none());
     }
 }

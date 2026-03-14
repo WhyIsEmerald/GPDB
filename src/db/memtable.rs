@@ -1,4 +1,4 @@
-use crate::{DBKey, Entry};
+use crate::{DBKey, ValueEntry};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -11,9 +11,9 @@ where
     K: DBKey,
 {
     // For fast, sorted iteration when flushing to SSTable
-    b_tree_map: BTreeMap<K, Entry<V>>,
+    b_tree_map: BTreeMap<K, ValueEntry<V>>,
     // For fast O(1) key lookups
-    hash_map: HashMap<K, Entry<V>>,
+    hash_map: HashMap<K, ValueEntry<V>>,
 }
 
 impl<K, V> MemTable<K, V>
@@ -29,8 +29,8 @@ where
     }
 
     /// Inserts/Updates a key-value pair. The value is an Arc to avoid expensive clones.
-    pub fn put(&mut self, key: K, value: Arc<V>) -> Option<Entry<V>> {
-        let entry = Entry {
+    pub fn put(&mut self, key: K, value: Arc<V>) -> Option<ValueEntry<V>> {
+        let entry = ValueEntry {
             value: Some(value),
             is_tombstone: false,
         };
@@ -39,8 +39,8 @@ where
     }
 
     /// Marks a key as deleted by inserting a tombstone.
-    pub fn delete(&mut self, key: K) -> Option<Entry<V>> {
-        let entry = Entry {
+    pub fn delete(&mut self, key: K) -> Option<ValueEntry<V>> {
+        let entry = ValueEntry {
             value: None,
             is_tombstone: true,
         };
@@ -71,7 +71,7 @@ where
     }
 
     /// Returns an iterator over the sorted key-value entries in the MemTable.
-    pub fn iter(&self) -> std::collections::btree_map::Iter<'_, K, Entry<V>> {
+    pub fn iter(&self) -> std::collections::btree_map::Iter<'_, K, ValueEntry<V>> {
         // deleted values are still iterable since this functionality is required for the sstable
         self.b_tree_map.iter()
     }

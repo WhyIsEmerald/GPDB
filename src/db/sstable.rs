@@ -1,5 +1,5 @@
 use crate::db::io::{read_record, write_record};
-use crate::{MemTable, DBKey, Entry, SSTableId, Result, Error};
+use crate::{MemTable, DBKey, Entry, ValueEntry, SSTableId, Result, Error};
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -25,6 +25,7 @@ where
     reader: Mutex<BufReader<File>>,
     index: BTreeMap<K, u64>,
     id: SSTableId,
+    index_offset: u64,
     _phantom: PhantomData<(K, V)>,
 }
 
@@ -69,6 +70,7 @@ where
             reader: Mutex::new(reader),
             index,
             id,
+            index_offset,
             _phantom: PhantomData,
         })
     }
@@ -88,8 +90,8 @@ where
         self.index.len()
     }
 
-    /// Retrieves an Entry for a given key from SSTable file on disk.
-    pub fn get(&self, key: &K) -> Result<Option<Entry<V>>> {
+    /// Retrieves a ValueEntry for a given key from SSTable file on disk.
+    pub fn get(&self, key: &K) -> Result<Option<ValueEntry<V>>> {
         let offset = match self.index.get(key) {
             Some(offset) => *offset,
             None => return Ok(None),
@@ -99,7 +101,8 @@ where
         let mut reader = self.reader.lock().map_err(|_| Error::Corruption("Lock poisoned".to_string()))?;
         reader.seek(SeekFrom::Start(offset))?;
 
-        read_record(&mut *reader)
+        let entry: Option<Entry<K, V>> = read_record(&mut *reader)?;
+        Ok(entry.map(|e| e.value))
     }
 
     /// Writes a new SSTable from the contents of a MemTable.
@@ -110,8 +113,12 @@ where
         let mut index = BTreeMap::new();
 
         let mut current_offset = 0;
-        for (key, entry) in memtable.iter() {
-            let bytes_written = write_record(&mut writer, entry)?;
+        for (key, value_entry) in memtable.iter() {
+            let entry = Entry {
+                key: key.clone(),
+                value: value_entry.clone(),
+            };
+            let bytes_written = write_record(&mut writer, &entry)?;
             index.insert(key.clone(), current_offset);
             current_offset += bytes_written;
         }
@@ -179,19 +186,19 @@ mod tests {
         let sstable: SSTable<String, String> =
             SSTable::open(&sstable_path).expect("Failed to open SSTable");
 
-        let entry1 = sstable
+        let value_entry1 = sstable
             .get(&"key1".to_string())
             .expect("Failed to get k1")
             .expect("k1 not found");
-        assert_eq!(entry1.value.unwrap().as_ref(), &"value1".to_string());
-        assert!(!entry1.is_tombstone);
+        assert_eq!(value_entry1.value.unwrap().as_ref(), &"value1".to_string());
+        assert!(!value_entry1.is_tombstone);
 
-        let entry2 = sstable
+        let value_entry2 = sstable
             .get(&"key2".to_string())
             .expect("Failed to get k2")
             .expect("k2 not found");
-        assert!(entry2.is_tombstone);
-        assert_eq!(entry2.value, None);
+        assert!(value_entry2.is_tombstone);
+        assert_eq!(value_entry2.value, None);
 
         let entry3 = sstable.get(&"key3".to_string()).expect("Failed to get k3");
         assert!(entry3.is_none());

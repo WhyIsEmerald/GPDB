@@ -157,11 +157,11 @@ where
         // Check the SSTables, from newest to oldest
         for level_sstables in self.levels.iter() {
             for sstable in level_sstables.iter().rev() {
-                if let Some(entry) = sstable.get(key)? {
-                    if entry.is_tombstone {
+                if let Some(value_entry) = sstable.get(key)? {
+                    if value_entry.is_tombstone {
                         return Ok(None);
                     }
-                    return Ok(entry.value);
+                    return Ok(value_entry.value);
                 }
             }
         }

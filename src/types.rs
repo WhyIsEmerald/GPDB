@@ -34,19 +34,26 @@ impl std::fmt::Display for SSTableId {
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
-/// Entry stores the value for a key in the database together with a tombstone flag.
-pub struct Entry<V> {
+/// The value part of a database entry, including tombstone information.
+pub struct ValueEntry<V> {
     pub value: Option<Arc<V>>,
     pub is_tombstone: bool,
 }
 
-impl<V> Clone for Entry<V> {
+impl<V> Clone for ValueEntry<V> {
     fn clone(&self) -> Self {
-        Entry {
+        ValueEntry {
             value: self.value.clone(),
             is_tombstone: self.is_tombstone,
         }
     }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+/// A full key-value pair as stored in an SSTable data block or returned by iterators.
+pub struct Entry<K, V> {
+    pub key: K,
+    pub value: ValueEntry<V>,
 }
 
 pub trait DBKey: Eq + Hash + Ord + Clone + Serialize + DeserializeOwned {}

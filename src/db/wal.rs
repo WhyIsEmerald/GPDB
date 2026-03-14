@@ -1,8 +1,8 @@
+use crate::db::io::{read_record, write_record};
 use crate::{LogEntry, Result, Error};
-use crc32fast::Hasher;
 use serde::{Serialize, de::DeserializeOwned};
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
@@ -23,7 +23,6 @@ where
     V: Serialize + DeserializeOwned,
 {
     /// Creates a brand new, empty WAL file.
-    /// If a file already exists at the path, it will be truncated (emptied).
     pub fn create(path: &Path) -> Result<Self> {
         let file = OpenOptions::new()
             .write(true)
@@ -38,7 +37,7 @@ where
         })
     }
 
-    /// Opens an existing WAL file for appending. Fails if the file does not exist.
+    /// Opens an existing WAL file for appending.
     pub fn open(path: &Path) -> Result<Self> {
         let file = OpenOptions::new().write(true).append(true).open(path)?;
 
@@ -50,23 +49,8 @@ where
     }
 
     /// Appends a single `LogEntry` to the WAL's buffer.
-    /// This is not guaranteed to be on disk until `flush()` is called.
     pub fn append(&mut self, entry: &LogEntry<K, V>) -> Result<()> {
-        // Serialize the LogEntry
-        let serialized_entry =
-            bincode::serialize(entry).map_err(|e| Error::Serialization(e.to_string()))?;
-        let entry_len = serialized_entry.len() as u64;
-
-        // Calculate the checksum of the data
-        let mut hasher = Hasher::new();
-        hasher.update(&serialized_entry);
-        let checksum = hasher.finalize();
-
-        // Write the record to the buffer: [Checksum (4), Length (8), Data]
-        self.writer.write_all(&checksum.to_le_bytes())?;
-        self.writer.write_all(&entry_len.to_le_bytes())?;
-        self.writer.write_all(&serialized_entry)?;
-
+        write_record(&mut self.writer, entry)?;
         Ok(())
     }
 
@@ -82,7 +66,6 @@ where
     }
 
     /// Flushes all buffered writes to the OS and ensures they are written to disk.
-    /// This is the "commit" point for durability.
     pub fn flush(&mut self) -> Result<()> {
         self.writer.flush()?;
         self.writer.get_ref().sync_all()?;
@@ -90,7 +73,6 @@ where
     }
 
     /// Returns an iterator that can read all log entries from the beginning of the file.
-    /// This is used for database recovery on startup.
     pub fn iter(&self) -> Result<WalIterator<K, V>> {
         let file = OpenOptions::new().read(true).open(&self.path)?;
         Ok(WalIterator {
@@ -100,7 +82,6 @@ where
     }
 }
 
-/// An iterator over the entries in a WAL file.
 pub struct WalIterator<K, V>
 where
     K: Serialize + DeserializeOwned,
@@ -118,45 +99,7 @@ where
     type Item = std::result::Result<LogEntry<K, V>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Read checksum (4 bytes)
-        let mut checksum_bytes = [0u8; 4];
-        // If we can't read 4 bytes, it means we've reached the end of the file or there's an error.
-        // `read_exact` returns `Err` on EOF if fewer than 4 bytes can be read.
-        if let Err(e) = self.reader.read_exact(&mut checksum_bytes) {
-            if e.kind() == io::ErrorKind::UnexpectedEof {
-                return None; // Clean EOF
-            }
-            return Some(Err(Error::Io(e)));
-        }
-        let expected_checksum = u32::from_le_bytes(checksum_bytes);
-
-        // Read entry length (8 bytes)
-        let mut len_bytes = [0u8; 8];
-        if let Err(e) = self.reader.read_exact(&mut len_bytes) {
-            return Some(Err(Error::Io(e)));
-        }
-        let entry_len = u64::from_le_bytes(len_bytes) as usize;
-
-        // Read serialized entry data
-        let mut serialized_entry = vec![0; entry_len];
-        if let Err(e) = self.reader.read_exact(&mut serialized_entry) {
-            return Some(Err(Error::Io(e)));
-        }
-
-        // Verify checksum
-        let mut hasher = Hasher::new();
-        hasher.update(&serialized_entry);
-        if hasher.finalize() != expected_checksum {
-            return Some(Err(Error::Corruption(
-                "WAL entry checksum mismatch".to_string(),
-            )));
-        }
-
-        // Deserialize entry and return it
-        match bincode::deserialize(&serialized_entry) {
-            Ok(entry) => Some(Ok(entry)),
-            Err(e) => Some(Err(Error::Serialization(e.to_string()))),
-        }
+        read_record(&mut self.reader).transpose()
     }
 }
 

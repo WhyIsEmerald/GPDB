@@ -3,6 +3,7 @@ pub mod manifest;
 pub mod memtable;
 pub mod sstable;
 pub mod wal;
+pub mod io;
 
 pub use database::DB;
 pub use manifest::Manifest;

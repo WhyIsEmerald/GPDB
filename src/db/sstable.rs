@@ -1,6 +1,5 @@
+use crate::db::io::{read_record, write_record};
 use crate::{MemTable, DBKey, Entry, SSTableId, Result, Error};
-use bincode;
-use crc32fast::Hasher;
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -50,20 +49,20 @@ where
         reader.read_exact(&mut buf)?;
         let index_offset = u64::from_le_bytes(buf);
         reader.read_exact(&mut buf)?;
-        let index_size = u64::from_le_bytes(buf);
+        let _index_size = u64::from_le_bytes(buf);
         reader.read_exact(&mut buf)?;
         let id = SSTableId(u64::from_le_bytes(buf));
         reader.read_exact(&mut buf)?;
         let magic_number = u64::from_le_bytes(buf);
+        
         if magic_number != MAGIC_NUMBER {
             return Err(Error::Corruption("Invalid magic number".to_string()));
         }
 
+        // Seek to the index block and read it using the protected framing
         reader.seek(SeekFrom::Start(index_offset))?;
-        let mut index_data = vec![0; index_size as usize];
-        reader.read_exact(&mut index_data)?;
-        let index: BTreeMap<K, u64> = bincode::deserialize(&index_data)
-            .map_err(|e| Error::Serialization(e.to_string()))?;
+        let index: BTreeMap<K, u64> = read_record(&mut reader)?
+            .ok_or_else(|| Error::Corruption("SSTable index block is missing or empty".to_string()))?;
 
         Ok(SSTable {
             path: path.to_path_buf(),
@@ -100,31 +99,7 @@ where
         let mut reader = self.reader.lock().map_err(|_| Error::Corruption("Lock poisoned".to_string()))?;
         reader.seek(SeekFrom::Start(offset))?;
 
-        // Read the checksum
-        let mut checksum_bytes = [0u8; 4];
-        reader.read_exact(&mut checksum_bytes)?;
-        let expected_checksum = u32::from_le_bytes(checksum_bytes);
-
-        // Read the length of the data
-        let mut len_bytes = [0u8; 8];
-        reader.read_exact(&mut len_bytes)?;
-        let entry_len = u64::from_le_bytes(len_bytes) as usize;
-
-        // Read the actual data
-        let mut serialized_entry = vec![0; entry_len];
-        reader.read_exact(&mut serialized_entry)?;
-
-        // Verify the checksum
-        let mut hasher = Hasher::new();
-        hasher.update(&serialized_entry);
-        if hasher.finalize() != expected_checksum {
-            return Err(Error::Corruption("Checksum mismatch".to_string()));
-        }
-
-        let entry: Entry<V> = bincode::deserialize(&serialized_entry)
-            .map_err(|e| Error::Serialization(e.to_string()))?;
-
-        Ok(Some(entry))
+        read_record(&mut *reader)
     }
 
     /// Writes a new SSTable from the contents of a MemTable.
@@ -136,26 +111,16 @@ where
 
         let mut current_offset = 0;
         for (key, entry) in memtable.iter() {
-            let serialized_entry = bincode::serialize(entry)
-                .map_err(|e| Error::Serialization(e.to_string()))?;
-            let mut hasher = Hasher::new();
-            hasher.update(&serialized_entry);
-            let checksum = hasher.finalize();
-            let len = serialized_entry.len() as u64;
-
-            writer.write_all(&checksum.to_le_bytes())?;
-            writer.write_all(&len.to_le_bytes())?;
-            writer.write_all(&serialized_entry)?;
-
+            let bytes_written = write_record(&mut writer, entry)?;
             index.insert(key.clone(), current_offset);
-            current_offset += 4 + 8 + len;
+            current_offset += bytes_written;
         }
+        
+        // Write the index block using the protected framing
         let index_offset = current_offset;
-        let serialized_index = bincode::serialize(&index)
-            .map_err(|e| Error::Serialization(e.to_string()))?;
+        let index_size = write_record(&mut writer, &index)?;
 
-        let index_size = serialized_index.len() as u64;
-        writer.write_all(&serialized_index)?;
+        // Write the footer
         writer.write_all(&index_offset.to_le_bytes())?;
         writer.write_all(&index_size.to_le_bytes())?;
         writer.write_all(&id.0.to_le_bytes())?;

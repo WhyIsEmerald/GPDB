@@ -1,5 +1,6 @@
-use crate::{DBKey, Entry, SSTableId};
-use std::cmp::Ordering;
+use crate::{DBKey, Entry, Result, SSTable, SSTableId, db::sstable::SSTableIterator};
+use serde::{Serialize, de::DeserializeOwned};
+use std::{cmp::Ordering, collections::BinaryHeap};
 
 pub struct MergeElement<K, V> {
     pub sstable_id: SSTableId,
@@ -36,12 +37,99 @@ impl<K: DBKey, V> Ord for MergeElement<K, V> {
     }
 }
 
+pub struct MergeStream<K, V>
+where
+    K: DBKey,
+    V: Serialize + DeserializeOwned,
+{
+    heap: BinaryHeap<MergeElement<K, V>>,
+    iters: Vec<SSTableIterator<K, V>>,
+}
+
+impl<K, V> MergeStream<K, V>
+where
+    K: DBKey,
+    V: Serialize + DeserializeOwned,
+{
+    // Create a new MergeStream from a slice of SSTables.
+    pub fn new(sstables: &[SSTable<K, V>]) -> Result<Self> {
+        let mut iters = Vec::with_capacity(sstables.len());
+        let mut heap = BinaryHeap::with_capacity(sstables.len());
+
+        for (idx, sst) in sstables.iter().enumerate() {
+            let mut iter = sst.iter()?;
+            if let Some(entry) = iter.next() {
+                let entry = entry?;
+                heap.push(MergeElement {
+                    sstable_id: sst.id(),
+                    entry,
+                    iter_index: idx,
+                });
+            }
+            iters.push(iter);
+        }
+        Ok(Self { heap, iters })
+    }
+}
+
+impl<K, V> Iterator for MergeStream<K, V>
+where
+    K: DBKey,
+    V: Serialize + DeserializeOwned,
+{
+    type Item = Result<Entry<K, V>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let winner = self.heap.pop()?;
+
+        if let Some(result) = self.iters[winner.iter_index].next() {
+            match result {
+                Ok(entry) => {
+                    self.heap.push(MergeElement {
+                        sstable_id: winner.sstable_id,
+                        entry,
+                        iter_index: winner.iter_index,
+                    });
+                }
+                Err(e) => return Some(Err(e)),
+            }
+        }
+
+        loop {
+            if let Some(peeked) = self.heap.peek() {
+                if peeked.entry.key != winner.entry.key {
+                    break;
+                }
+            } else {
+                break;
+            }
+
+            let old = self.heap.pop().unwrap();
+            if let Some(result) = self.iters[old.iter_index].next() {
+                match result {
+                    Ok(entry) => {
+                        self.heap.push(MergeElement {
+                            sstable_id: old.sstable_id,
+                            entry,
+                            iter_index: old.iter_index,
+                        });
+                    }
+                    Err(e) => return Some(Err(e)),
+                }
+            }
+        }
+
+        Some(Ok(winner.entry))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ValueEntry;
+    use crate::{ValueEntry, MemTable};
     use std::collections::BinaryHeap;
     use std::sync::Arc;
+    use tempfile::TempDir;
 
     // Helper to create a MergeElement for testing
     fn make_el(key: &str, id: u64, iter_idx: usize) -> MergeElement<String, String> {
@@ -111,5 +199,42 @@ mod tests {
         // 3. Next key ("B"). Highest ID (100) wins.
         assert_eq!(heap.pop().unwrap().sstable_id, SSTableId(100));
         assert_eq!(heap.pop().unwrap().sstable_id, SSTableId(50));
+    }
+
+    #[test]
+    fn test_merge_stream_integration() {
+        let tmp_dir = TempDir::new().unwrap();
+        
+        // SST1 (Older): [A, C, E]
+        let sst1_path = tmp_dir.path().join("L0-1.sst");
+        let mut mem1 = MemTable::new();
+        mem1.put("A".to_string(), Arc::new("v1-old".to_string()));
+        mem1.put("C".to_string(), Arc::new("v1".to_string()));
+        mem1.put("E".to_string(), Arc::new("v1".to_string()));
+        let sst1 = SSTable::write_from_memtable(&sst1_path, &mem1, SSTableId(1)).unwrap();
+
+        // SST2 (Newer): [A, B, D]
+        let sst2_path = tmp_dir.path().join("L0-2.sst");
+        let mut mem2 = MemTable::new();
+        mem2.put("A".to_string(), Arc::new("v2-new".to_string()));
+        mem2.put("B".to_string(), Arc::new("v2".to_string()));
+        mem2.put("D".to_string(), Arc::new("v2".to_string()));
+        let sst2 = SSTable::write_from_memtable(&sst2_path, &mem2, SSTableId(2)).unwrap();
+
+        let sstables = vec![sst1, sst2];
+        let stream = MergeStream::new(&sstables).unwrap();
+
+        let results: Vec<Entry<String, String>> = stream.map(|r| r.unwrap()).collect();
+
+        // Check deduplication (A should be v2-new)
+        assert_eq!(results[0].key, "A");
+        assert_eq!(results[0].value.value.as_ref().unwrap().as_str(), "v2-new");
+        
+        // Check sorting and inclusion
+        assert_eq!(results[1].key, "B");
+        assert_eq!(results[2].key, "C");
+        assert_eq!(results[3].key, "D");
+        assert_eq!(results[4].key, "E");
+        assert_eq!(results.len(), 5);
     }
 }

@@ -1,9 +1,9 @@
 use crate::db::io::{read_record, write_record};
-use crate::{MemTable, DBKey, Entry, ValueEntry, SSTableId, Result, Error};
-use serde::{de::DeserializeOwned, Serialize};
+use crate::{DBKey, Entry, Error, MemTable, Result, SSTableId, ValueEntry};
+use serde::{Serialize, de::DeserializeOwned};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, Read, Seek, SeekFrom, Write, BufWriter};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -55,15 +55,16 @@ where
         let id = SSTableId(u64::from_le_bytes(buf));
         reader.read_exact(&mut buf)?;
         let magic_number = u64::from_le_bytes(buf);
-        
+
         if magic_number != MAGIC_NUMBER {
             return Err(Error::Corruption("Invalid magic number".to_string()));
         }
 
         // Seek to the index block and read it using the protected framing
         reader.seek(SeekFrom::Start(index_offset))?;
-        let index: BTreeMap<K, u64> = read_record(&mut reader)?
-            .ok_or_else(|| Error::Corruption("SSTable index block is missing or empty".to_string()))?;
+        let index: BTreeMap<K, u64> = read_record(&mut reader)?.ok_or_else(|| {
+            Error::Corruption("SSTable index block is missing or empty".to_string())
+        })?;
 
         Ok(SSTable {
             path: path.to_path_buf(),
@@ -98,32 +99,35 @@ where
         };
 
         // Lock the reader and seek to the entry offset
-        let mut reader = self.reader.lock().map_err(|_| Error::Corruption("Lock poisoned".to_string()))?;
+        let mut reader = self
+            .reader
+            .lock()
+            .map_err(|_| Error::Corruption("Lock poisoned".to_string()))?;
         reader.seek(SeekFrom::Start(offset))?;
 
         let entry: Option<Entry<K, V>> = read_record(&mut *reader)?;
         Ok(entry.map(|e| e.value))
     }
 
-    /// Writes a new SSTable from the contents of a MemTable.
-    /// Returns the opened SSTable instance.
-    pub fn write_from_memtable(path: &Path, memtable: &MemTable<K, V>, id: SSTableId) -> Result<Self> {
+    pub fn write_from_iter<I>(path: &Path, iter: I, id: SSTableId) -> Result<Self>
+    where
+        K: DBKey,
+        V: Serialize + DeserializeOwned,
+        I: Iterator<Item = Result<Entry<K, V>>>,
+    {
         let file = OpenOptions::new().write(true).create_new(true).open(path)?;
         let mut writer = BufWriter::new(file);
         let mut index = BTreeMap::new();
 
         let mut current_offset = 0;
-        for (key, value_entry) in memtable.iter() {
-            let entry = Entry {
-                key: key.clone(),
-                value: value_entry.clone(),
-            };
+        for (_, item) in iter.enumerate() {
+            let entry = item?;
             let bytes_written = write_record(&mut writer, &entry)?;
-            index.insert(key.clone(), current_offset);
+            index.insert(entry.key.clone(), current_offset);
             current_offset += bytes_written;
         }
-        
-        // Write the index block using the protected framing
+
+        // Write the index block
         let index_offset = current_offset;
         let index_size = write_record(&mut writer, &index)?;
 
@@ -135,6 +139,22 @@ where
         writer.flush()?;
 
         Self::open(path)
+    }
+
+    /// Writes a new SSTable from the contents of a MemTable.
+    /// Returns the opened SSTable instance.
+    pub fn write_from_memtable(
+        path: &Path,
+        memtable: &MemTable<K, V>,
+        id: SSTableId,
+    ) -> Result<Self> {
+        let iter = memtable.iter().map(|(k, v)| {
+            Ok(Entry {
+                key: k.clone(),
+                value: v.clone(),
+            })
+        });
+        Self::write_from_iter(path, iter, id)
     }
 
     /// Returns an iterator over the full entries in the SSTable.
@@ -245,7 +265,7 @@ mod tests {
         memtable.put("k1".to_string(), Arc::new("v1".to_string()));
         memtable.put("k2".to_string(), Arc::new("v2".to_string()));
         memtable.delete("k3".to_string());
-        
+
         let sstable: SSTable<String, String> =
             SSTable::write_from_memtable(&sstable_path, &memtable, SSTableId(1)).unwrap();
 

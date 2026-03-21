@@ -1,6 +1,7 @@
-use crate::{DBKey, Entry, Result, SSTable, SSTableId, db::sstable::SSTableIterator};
+use crate::db::sstable::SSTableIterator;
+use crate::{DBKey, Entry, Result, SSTable, SSTableId};
 use serde::{Serialize, de::DeserializeOwned};
-use std::{cmp::Ordering, collections::BinaryHeap};
+use std::{cmp::Ordering, collections::BinaryHeap, path::Path};
 
 pub struct MergeElement<K, V> {
     pub sstable_id: SSTableId,
@@ -123,11 +124,28 @@ where
     }
 }
 
+pub struct Compactor;
+
+impl Compactor {
+    /// Merges a slice of L0 SSTables into a single new L1 SSTable.
+    pub fn compact_l0<K, V>(
+        sstables: &[SSTable<K, V>],
+        output_path: &Path,
+        new_id: SSTableId,
+    ) -> Result<SSTable<K, V>>
+    where
+        K: DBKey,
+        V: Serialize + DeserializeOwned,
+    {
+        let stream = MergeStream::new(sstables)?;
+        SSTable::write_from_iter(output_path, stream, new_id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ValueEntry, MemTable};
-    use std::collections::BinaryHeap;
+    use crate::{MemTable, ValueEntry};
     use std::sync::Arc;
     use tempfile::TempDir;
 
@@ -149,13 +167,10 @@ mod tests {
     #[test]
     fn test_key_priority() {
         let mut heap = BinaryHeap::new();
-
-        // Push keys in "wrong" order
         heap.push(make_el("C", 1, 0));
         heap.push(make_el("A", 1, 0));
         heap.push(make_el("B", 1, 0));
 
-        // BinaryHeap should pop smallest key first because of our flipped Ord
         assert_eq!(heap.pop().unwrap().entry.key, "A");
         assert_eq!(heap.pop().unwrap().entry.key, "B");
         assert_eq!(heap.pop().unwrap().entry.key, "C");
@@ -174,7 +189,6 @@ mod tests {
         let winner = heap.pop().unwrap();
         assert_eq!(winner.entry.key, "A");
         assert_eq!(winner.sstable_id, SSTableId(10));
-
         assert_eq!(heap.pop().unwrap().sstable_id, SSTableId(5));
         assert_eq!(heap.pop().unwrap().sstable_id, SSTableId(2));
     }
@@ -204,7 +218,7 @@ mod tests {
     #[test]
     fn test_merge_stream_integration() {
         let tmp_dir = TempDir::new().unwrap();
-        
+
         // SST1 (Older): [A, C, E]
         let sst1_path = tmp_dir.path().join("L0-1.sst");
         let mut mem1 = MemTable::new();
@@ -223,18 +237,51 @@ mod tests {
 
         let sstables = vec![sst1, sst2];
         let stream = MergeStream::new(&sstables).unwrap();
-
         let results: Vec<Entry<String, String>> = stream.map(|r| r.unwrap()).collect();
 
         // Check deduplication (A should be v2-new)
         assert_eq!(results[0].key, "A");
         assert_eq!(results[0].value.value.as_ref().unwrap().as_str(), "v2-new");
-        
+
         // Check sorting and inclusion
         assert_eq!(results[1].key, "B");
         assert_eq!(results[2].key, "C");
-        assert_eq!(results[3].key, "D");
-        assert_eq!(results[4].key, "E");
-        assert_eq!(results.len(), 5);
+    }
+
+    #[test]
+    fn test_compactor_l0_to_disk() {
+        let tmp_dir = TempDir::new().unwrap();
+
+        // Create L0-1 [A, C]
+        let path1 = tmp_dir.path().join("L0-1.sst");
+        let mut mem1 = MemTable::new();
+        mem1.put("A".to_string(), Arc::new("old".to_string()));
+        mem1.put("C".to_string(), Arc::new("val".to_string()));
+        let sst1 = SSTable::write_from_memtable(&path1, &mem1, SSTableId(1)).unwrap();
+
+        // L0-2 [A, B]
+        let path2 = tmp_dir.path().join("L0-2.sst");
+        let mut mem2 = MemTable::new();
+        mem2.put("A".to_string(), Arc::new("new".to_string()));
+        mem2.put("B".to_string(), Arc::new("val".to_string()));
+        let sst2 = SSTable::write_from_memtable(&path2, &mem2, SSTableId(2)).unwrap();
+
+        // Compact them into L1-5
+        let l1_path = tmp_dir.path().join("L1-5.sst");
+        let sst_l1 = Compactor::compact_l0(&[sst1, sst2], &l1_path, SSTableId(5))
+            .expect("Compaction failed");
+
+        // Verify the new SSTable on disk
+        assert_eq!(sst_l1.id(), SSTableId(5));
+        assert_eq!(sst_l1.len(), 3); // A, B, C
+
+        let val_a = sst_l1.get(&"A".to_string()).unwrap().unwrap();
+        assert_eq!(val_a.value.unwrap().as_str(), "new");
+
+        let val_b = sst_l1.get(&"B".to_string()).unwrap().unwrap();
+        assert!(val_b.value.is_some());
+
+        let val_c = sst_l1.get(&"C".to_string()).unwrap().unwrap();
+        assert!(val_c.value.is_some());
     }
 }

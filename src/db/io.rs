@@ -1,4 +1,4 @@
-use crate::{Result, Error};
+use crate::{Error, Result};
 use crc32fast::Hasher;
 use serde::{Serialize, de::DeserializeOwned};
 use std::io::{Read, Write};
@@ -6,9 +6,9 @@ use std::io::{Read, Write};
 /// Writes a data-frame to the writer: [Checksum (4), Length (8), Data]
 /// Returns the total number of bytes written.
 pub fn write_record<W: Write, T: Serialize>(writer: &mut W, data: &T) -> Result<u64> {
-    let serialized_data = bincode::serialize(data)
-        .map_err(|e| Error::Serialization(e.to_string()))?;
-    
+    let serialized_data =
+        bincode::serialize(data).map_err(|e| Error::Serialization(e.to_string()))?;
+
     let len = serialized_data.len() as u64;
     let mut hasher = Hasher::new();
     hasher.update(&serialized_data);
@@ -63,8 +63,8 @@ pub fn read_record<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<Optio
     }
 
     // 5. Deserialize
-    let data: T = bincode::deserialize(&data_bytes)
-        .map_err(|e| Error::Serialization(e.to_string()))?;
+    let data: T =
+        bincode::deserialize(&data_bytes).map_err(|e| Error::Serialization(e.to_string()))?;
 
     Ok(Some(data))
 }
@@ -108,7 +108,7 @@ mod tests {
     fn test_read_eof() {
         let empty_buffer: Vec<u8> = Vec::new();
         let mut cursor = Cursor::new(empty_buffer);
-        
+
         let result: Option<TestStruct> = read_record(&mut cursor).expect("Read failed");
         assert!(result.is_none());
     }
@@ -139,7 +139,11 @@ mod tests {
     #[test]
     fn test_unexpected_eof_in_middle() {
         let mut buffer = Vec::new();
-        let data = TestStruct { id: 1, name: "Short".to_string(), tags: vec![] };
+        let data = TestStruct {
+            id: 1,
+            name: "Short".to_string(),
+            tags: vec![],
+        };
         write_record(&mut buffer, &data).unwrap();
 
         // Truncate the buffer to simulate a crash mid-write
@@ -157,14 +161,22 @@ mod tests {
     #[test]
     fn test_multiple_records() {
         let mut buffer = Vec::new();
-        let r1 = TestStruct { id: 1, name: "A".to_string(), tags: vec![] };
-        let r2 = TestStruct { id: 2, name: "B".to_string(), tags: vec![] };
+        let r1 = TestStruct {
+            id: 1,
+            name: "A".to_string(),
+            tags: vec![],
+        };
+        let r2 = TestStruct {
+            id: 2,
+            name: "B".to_string(),
+            tags: vec![],
+        };
 
         write_record(&mut buffer, &r1).unwrap();
         write_record(&mut buffer, &r2).unwrap();
 
         let mut cursor = Cursor::new(buffer);
-        
+
         let rec1: TestStruct = read_record(&mut cursor).unwrap().unwrap();
         let rec2: TestStruct = read_record(&mut cursor).unwrap().unwrap();
         let rec3: Option<TestStruct> = read_record(&mut cursor).unwrap();

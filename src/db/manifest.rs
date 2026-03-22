@@ -16,12 +16,18 @@ impl Manifest {
             .write(true)
             .truncate(true)
             .open(&path)?;
-        Ok(Manifest { path, writer: BufWriter::new(file) })
+        Ok(Manifest {
+            path,
+            writer: BufWriter::new(file),
+        })
     }
 
     pub fn open(path: PathBuf) -> Result<Self> {
         let file = OpenOptions::new().write(true).append(true).open(&path)?;
-        Ok(Manifest { path, writer: BufWriter::new(file) })
+        Ok(Manifest {
+            path,
+            writer: BufWriter::new(file),
+        })
     }
 
     pub fn append(&mut self, entry: &ManifestEntry) -> Result<()> {

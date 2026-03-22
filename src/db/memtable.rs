@@ -56,6 +56,11 @@ where
             .and_then(|entry| entry.value.clone())
     }
 
+    /// Returns the full ValueEntry (including tombstone status) if the key exists.
+    pub fn get_entry(&self, key: &K) -> Option<&ValueEntry<V>> {
+        self.hash_map.get(key)
+    }
+
     /// Returns the number of non-tombstone key-value pairs in the `MemTable`.
     pub fn len(&self) -> usize {
         self.hash_map

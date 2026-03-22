@@ -1,10 +1,13 @@
-use crate::{Manifest, MemTable, SSTable, Wal, DBKey, LogEntry, ManifestEntry, SSTableId, Result};
+use crate::db::compaction::Compactor;
+use crate::{DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId, Wal};
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const MANIFEST_FILE_NAME: &str = "MANIFEST";
 const WAL_FILE_NAME: &str = "wal.log";
+const L0_COMPACTION_THRESHOLD: usize = 4;
 
 /// The main database struct, which orchestrates the MemTable, WAL, and SSTables.
 pub struct DB<K, V>
@@ -28,16 +31,6 @@ where
     V: serde::Serialize + serde::de::DeserializeOwned,
 {
     /// Opens the database at a given path.
-    /// This will recover state from the Manifest and data from the WAL.
-    /// 
-    /// # Example
-    /// ```
-    /// # use gpdb::DB;
-    /// # use tempfile::TempDir;
-    /// # let tmp_dir = TempDir::new().unwrap();
-    /// # let path = tmp_dir.path();
-    /// let db: DB<String, String> = DB::open(path, 1024 * 1024).expect("Failed to open DB");
-    /// ```
     pub fn open(path: &Path, max_memtable_size: usize) -> Result<Self> {
         std::fs::create_dir_all(path)?;
 
@@ -51,21 +44,17 @@ where
         let mut levels: Vec<Vec<SSTable<K, V>>> = vec![Vec::new()];
         let mut next_id = SSTableId(0);
 
-        // Replay manifest to recover state
+        let mut active_sstables: HashSet<(usize, PathBuf)> = HashSet::new();
+
         for record_result in manifest.iter()? {
-            let record = record_result.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let record =
+                record_result.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             match record {
                 ManifestEntry::AddSSTable { level, path } => {
-                    if level >= levels.len() {
-                        levels.resize_with(level + 1, Vec::new);
-                    }
-                    let sstable = SSTable::open(&path)?;
-                    levels[level].push(sstable);
+                    active_sstables.insert((level, path.clone()));
                 }
                 ManifestEntry::RemoveSSTable { level, path } => {
-                    if let Some(level_sstables) = levels.get_mut(level) {
-                        level_sstables.retain(|sst| sst.path() != path);
-                    }
+                    active_sstables.remove(&(level, path.clone()));
                 }
                 ManifestEntry::NextID(id) => {
                     next_id = id;
@@ -73,7 +62,19 @@ where
             }
         }
 
-        // Sort SSTables within each level by ID (which is sequential)
+        for entry in active_sstables.iter() {
+            match entry {
+                (level, rel_path) => {
+                    if level >= &levels.len() {
+                        levels.resize_with(*level + 1, Vec::new);
+                    }
+                    let full_path = path.join(rel_path);
+                    let sstable = SSTable::open(&full_path)?;
+                    levels[*level].push(sstable);
+                }
+            }
+        }
+
         for level_sstables in &mut levels {
             level_sstables.sort_by_key(|sst| sst.id());
         }
@@ -85,15 +86,12 @@ where
         if wal_path.exists() {
             let existing_wal = Wal::open(&wal_path)?;
             for entry_result in existing_wal.iter()? {
-                let entry = entry_result.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let entry =
+                    entry_result.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 match entry {
-                    LogEntry::Put(k, v) => {
-                        memtable.put(k, v);
-                    }
-                    LogEntry::Delete(k) => {
-                        memtable.delete(k);
-                    }
-                }
+                    LogEntry::Put(k, v) => memtable.put(k, v),
+                    LogEntry::Delete(k) => memtable.delete(k),
+                };
             }
             wal = Wal::open(&wal_path)?;
         } else {
@@ -113,16 +111,6 @@ where
     }
 
     /// Puts a key-value pair into the database.
-    ///
-    /// # Example
-    /// ```
-    /// # use gpdb::DB;
-    /// # use tempfile::TempDir;
-    /// # let tmp_dir = TempDir::new().unwrap();
-    /// # let path = tmp_dir.path();
-    /// let mut db = DB::open(path, 1024 * 1024).unwrap();
-    /// db.put("key".to_string(), "value".to_string()).unwrap();
-    /// ```
     pub fn put(&mut self, key: K, value: V) -> Result<()> {
         let value_size = std::mem::size_of_val(&value);
         let key_size = std::mem::size_of_val(&key);
@@ -133,8 +121,12 @@ where
         self.wal.append(&log_entry)?;
         self.wal.flush()?;
         self.memtable.put(key, arc_value);
+
         if self.memtable_size > self.max_memtable_size {
             self.flush_memtable()?;
+            if self.levels[0].len() >= L0_COMPACTION_THRESHOLD {
+                self.run_compaction()?;
+            }
         }
         Ok(())
     }
@@ -150,11 +142,13 @@ where
 
     /// Retrieves a value for a given key from the database.
     pub fn get(&self, key: &K) -> Result<Option<Arc<V>>> {
-        if let Some(value_arc) = self.memtable.get(key) {
-            return Ok(Some(value_arc));
+        if let Some(entry) = self.memtable.get_entry(key) {
+            if entry.is_tombstone {
+                return Ok(None);
+            }
+            return Ok(entry.value.clone());
         }
 
-        // Check the SSTables, from newest to oldest
         for level_sstables in self.levels.iter() {
             for sstable in level_sstables.iter().rev() {
                 if let Some(value_entry) = sstable.get(key)? {
@@ -172,31 +166,76 @@ where
     /// Flushes the MemTable to an SSTable and updates the Manifest.
     fn flush_memtable(&mut self) -> Result<()> {
         let id = self.next_id;
-        let sstable_path = self.path.join(format!("L0-{}.sst", id));
+        let filename = format!("L0-{}.sst", id);
+        let sstable_path = self.path.join(&filename);
 
-        // 1. Write SSTable
         let new_sstable = SSTable::write_from_memtable(&sstable_path, &self.memtable, id)?;
 
-        // 2. Update Manifest BEFORE updating in-memory state
         self.manifest.append(&ManifestEntry::AddSSTable {
             level: 0,
-            path: sstable_path.clone(),
+            path: PathBuf::from(filename),
         })?;
         self.next_id = SSTableId(id.0 + 1);
         self.manifest.append(&ManifestEntry::NextID(self.next_id))?;
         self.manifest.flush()?;
 
-        // 3. Update in-memory SSTable list
         if self.levels.is_empty() {
             self.levels.push(Vec::new());
         }
         self.levels[0].push(new_sstable);
         self.levels[0].sort_by_key(|sst| sst.id());
 
-        // 4. Clear MemTable and WAL
         self.memtable.clear();
         self.memtable_size = 0;
         self.wal.clear()?;
+
+        Ok(())
+    }
+
+    /// Merges all L0 SSTables into a single L1 SSTable.
+    fn run_compaction(&mut self) -> Result<()> {
+        let l0_sstables = &self.levels[0];
+        let id = self.next_id;
+        let filename = format!("L1-{}.sst", id);
+        let l1_path = self.path.join(&filename);
+
+        let new_l1_sstable = Compactor::compact_l0(l0_sstables, &l1_path, id)?;
+
+        // Update Manifest
+        for sst in l0_sstables {
+            if let Some(file_name) = sst.path().file_name() {
+                self.manifest.append(&ManifestEntry::RemoveSSTable {
+                    level: 0,
+                    path: PathBuf::from(file_name),
+                })?;
+            }
+        }
+        self.manifest.append(&ManifestEntry::AddSSTable {
+            level: 1,
+            path: PathBuf::from(filename),
+        })?;
+
+        self.next_id = SSTableId(id.0 + 1);
+        self.manifest.append(&ManifestEntry::NextID(self.next_id))?;
+        self.manifest.flush()?;
+
+        // Update memory state
+        let old_l0_paths: Vec<PathBuf> = self.levels[0]
+            .iter()
+            .map(|s| s.path().to_path_buf())
+            .collect();
+        self.levels[0].clear();
+
+        if self.levels.len() < 2 {
+            self.levels.resize_with(2, Vec::new);
+        }
+        self.levels[1].push(new_l1_sstable);
+        self.levels[1].sort_by_key(|sst| sst.id());
+
+        // Cleanup
+        for path in old_l0_paths {
+            let _ = std::fs::remove_file(path);
+        }
 
         Ok(())
     }

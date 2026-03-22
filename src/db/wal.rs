@@ -1,5 +1,5 @@
 use crate::db::io::{read_record, write_record};
-use crate::{LogEntry, Result, Error};
+use crate::{Error, LogEntry, Result};
 use serde::{Serialize, de::DeserializeOwned};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};

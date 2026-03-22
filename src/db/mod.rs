@@ -5,6 +5,7 @@ pub mod manifest;
 pub mod memtable;
 pub mod sstable;
 pub mod wal;
+pub use compaction::*;
 pub use database::DB;
 pub use manifest::Manifest;
 pub use memtable::MemTable;

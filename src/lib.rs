@@ -2,4 +2,4 @@ pub mod db;
 pub mod types;
 
 pub use db::{DB, Manifest, MemTable, SSTable, Wal, compaction::*};
-pub use types::{DBKey, Entry, Error, LogEntry, ManifestEntry, Result, SSTableId, ValueEntry};
+pub use types::{DBKey, Entry, Error, LogEntry, ManifestEntry, Result, SSTableId, TableMeta, ValueEntry};

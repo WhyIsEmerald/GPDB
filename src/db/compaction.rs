@@ -127,8 +127,51 @@ where
 pub struct Compactor;
 
 impl Compactor {
-    /// Merges a slice of L0 SSTables into a single new L1 SSTable.
-    pub fn compact_l0<K, V>(
+    /// Finds all SSTables in `target_level` that overlap with the `candidate`.
+    pub fn find_overlapping_sstables<K, V>(
+        candidate: &SSTable<K, V>,
+        target_level: &[SSTable<K, V>],
+    ) -> Vec<usize>
+    where
+        K: DBKey,
+        V: Serialize + DeserializeOwned,
+    {
+        let mut overlapping = Vec::new();
+        for (idx, sst) in target_level.iter().enumerate() {
+            if candidate.overlaps(sst) {
+                overlapping.push(idx);
+            }
+        }
+        overlapping
+    }
+
+    /// Finds all SSTables in `target_level` that overlap with the range defined by a set of `sstables`.
+    pub fn find_range_overlapping_sstables<K, V>(
+        sstables: &[SSTable<K, V>],
+        target_level: &[SSTable<K, V>],
+    ) -> Vec<usize>
+    where
+        K: DBKey,
+        V: Serialize + DeserializeOwned,
+    {
+        if sstables.is_empty() {
+            return Vec::new();
+        }
+
+        let min = sstables.iter().map(|s| s.min_key()).min().unwrap();
+        let max = sstables.iter().map(|s| s.max_key()).max().unwrap();
+
+        let mut overlapping = Vec::new();
+        for (idx, sst) in target_level.iter().enumerate() {
+            if sst.overlaps_range(min, max) {
+                overlapping.push(idx);
+            }
+        }
+        overlapping
+    }
+
+    /// Merges a slice of SSTables into a single new SSTable at the given path.
+    pub fn compact<K, V>(
         sstables: &[SSTable<K, V>],
         output_path: &Path,
         new_id: SSTableId,
@@ -139,6 +182,20 @@ impl Compactor {
     {
         let stream = MergeStream::new(sstables)?;
         SSTable::write_from_iter(output_path, stream, new_id)
+    }
+
+    /// Merges a slice of L0 SSTables into a single new L1 SSTable.
+    /// (Maintained for backwards compatibility, redirects to generic compact)
+    pub fn compact_l0<K, V>(
+        sstables: &[SSTable<K, V>],
+        output_path: &Path,
+        new_id: SSTableId,
+    ) -> Result<SSTable<K, V>>
+    where
+        K: DBKey,
+        V: Serialize + DeserializeOwned,
+    {
+        Self::compact(sstables, output_path, new_id)
     }
 }
 

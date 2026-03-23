@@ -8,6 +8,8 @@ use std::sync::Arc;
 const MANIFEST_FILE_NAME: &str = "MANIFEST";
 const WAL_FILE_NAME: &str = "wal.log";
 const L0_COMPACTION_THRESHOLD: usize = 4;
+const BASE_LEVEL_SIZE: u64 = 10 * 1024 * 1024; // 10MB
+const LEVEL_MULTIPLIER: u32 = 10;
 
 /// The main database struct, which orchestrates the MemTable, WAL, and SSTables.
 pub struct DB<K, V>
@@ -124,11 +126,39 @@ where
 
         if self.memtable_size > self.max_memtable_size {
             self.flush_memtable()?;
-            if self.levels[0].len() >= L0_COMPACTION_THRESHOLD {
-                self.run_compaction()?;
+            self.check_compaction()?;
+        }
+        Ok(())
+    }
+
+    /// Checks if any level needs compaction and runs it.
+    fn check_compaction(&mut self) -> Result<()> {
+        // Check L0 first
+        if self.levels[0].len() >= L0_COMPACTION_THRESHOLD {
+            self.compact_l0()?;
+        }
+
+        // Check higher levels
+        for level in 1..self.levels.len() {
+            if self.level_current_size(level) > self.level_max_size(level) {
+                self.compact_level(level)?;
             }
         }
         Ok(())
+    }
+
+    fn level_max_size(&self, level: usize) -> u64 {
+        if level == 0 {
+            return 0; // L0 is count-based
+        }
+        BASE_LEVEL_SIZE * (LEVEL_MULTIPLIER.pow((level - 1) as u32) as u64)
+    }
+
+    fn level_current_size(&self, level: usize) -> u64 {
+        if level >= self.levels.len() {
+            return 0;
+        }
+        self.levels[level].iter().map(|s| s.file_size()).sum()
     }
 
     /// Deletes a key from the database.
@@ -193,13 +223,13 @@ where
     }
 
     /// Merges all L0 SSTables into a single L1 SSTable.
-    fn run_compaction(&mut self) -> Result<()> {
+    fn compact_l0(&mut self) -> Result<()> {
         let l0_sstables = &self.levels[0];
         let id = self.next_id;
         let filename = format!("L1-{}.sst", id);
         let l1_path = self.path.join(&filename);
 
-        let new_l1_sstable = Compactor::compact_l0(l0_sstables, &l1_path, id)?;
+        let new_l1_sstable = Compactor::compact(l0_sstables, &l1_path, id)?;
 
         // Update Manifest
         for sst in l0_sstables {
@@ -234,6 +264,75 @@ where
 
         // Cleanup
         for path in old_l0_paths {
+            let _ = std::fs::remove_file(path);
+        }
+
+        Ok(())
+    }
+
+    /// Merges one SSTable from Ln with overlapping SSTables from Ln+1.
+    fn compact_level(&mut self, level: usize) -> Result<()> {
+        if level >= self.levels.len() - 1 {
+            self.levels.push(Vec::new());
+        }
+
+        // Pick a candidate from Ln (Simple: the oldest/first one)
+        let candidate = self.levels[level].remove(0);
+
+        // Find overlaps in Ln+1
+        let overlapping_indices =
+            Compactor::find_overlapping_sstables(&candidate, &self.levels[level + 1]);
+
+        let mut to_compact = vec![candidate];
+        let mut old_paths = vec![to_compact[0].path().to_path_buf()];
+
+        // Remove overlapping files from Ln+1 and add to compact list
+        let mut sorted_indices = overlapping_indices.clone();
+        sorted_indices.sort_unstable_by(|a, b| b.cmp(a));
+
+        for idx in sorted_indices {
+            let sst = self.levels[level + 1].remove(idx);
+            old_paths.push(sst.path().to_path_buf());
+            to_compact.push(sst);
+        }
+
+        // Compact them
+        let id = self.next_id;
+        let next_level = level + 1;
+        let filename = format!("L{}-{}.sst", next_level, id);
+        let output_path = self.path.join(&filename);
+
+        let new_sstable = Compactor::compact(&to_compact, &output_path, id)?;
+
+        // Update Manifest
+        // Candidate was from 'level'
+        self.manifest.append(&ManifestEntry::RemoveSSTable {
+            level,
+            path: PathBuf::from(to_compact[0].path().file_name().unwrap()),
+        })?;
+        // Others were from 'level+1'
+        for sst in to_compact.iter().skip(1) {
+            self.manifest.append(&ManifestEntry::RemoveSSTable {
+                level: level + 1,
+                path: PathBuf::from(sst.path().file_name().unwrap()),
+            })?;
+        }
+
+        self.manifest.append(&ManifestEntry::AddSSTable {
+            level: level + 1,
+            path: PathBuf::from(filename),
+        })?;
+
+        self.next_id = SSTableId(id.0 + 1);
+        self.manifest.append(&ManifestEntry::NextID(self.next_id))?;
+        self.manifest.flush()?;
+
+        // Update memory state
+        self.levels[level + 1].push(new_sstable);
+        self.levels[level + 1].sort_by_key(|sst| sst.id());
+
+        // Cleanup
+        for path in old_paths {
             let _ = std::fs::remove_file(path);
         }
 

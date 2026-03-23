@@ -66,9 +66,17 @@ pub enum LogEntry<K, V> {
     Delete(K),
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum ManifestEntry {
     AddSSTable { level: usize, path: PathBuf },
     RemoveSSTable { level: usize, path: PathBuf },
     NextID(SSTableId),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+/// Metadata for an SSTable, stored in the file.
+pub struct TableMeta<K> {
+    pub min_key: K,
+    pub max_key: K,
+    pub num_entries: u64,
 }

@@ -1,5 +1,5 @@
 use crate::db::io::{read_record, write_record};
-use crate::{DBKey, Entry, Error, MemTable, Result, SSTableId, ValueEntry};
+use crate::{DBKey, Entry, Error, MemTable, Result, SSTableId, TableMeta, ValueEntry};
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -10,10 +10,10 @@ use std::sync::Mutex;
 
 /// The fixed size of the footer (32 bytes)
 ///
-/// Contains (index_offset: u64, index_size: u64, id: u64, magic_number: u64)
+/// Contains (index_offset: u64, meta_offset: u64, id: u64, magic_number: u64)
 const FOOTER_SIZE: u64 = 8 + 8 + 8 + 8;
 /// Unique identifier for sstable files
-const MAGIC_NUMBER: u64 = 0xDEADC0DEBEEFCAFE;
+const MAGIC_NUMBER: u64 = 0xDEADC0DEBEEFCAFF;
 
 pub struct SSTable<K, V>
 where
@@ -24,8 +24,10 @@ where
     // Mutex allows interior mutability so we can seek/read while having a &self reference
     reader: Mutex<BufReader<File>>,
     index: BTreeMap<K, u64>,
+    meta: TableMeta<K>,
     id: SSTableId,
     index_offset: u64,
+    file_size: u64,
     _phantom: PhantomData<(K, V)>,
 }
 
@@ -34,7 +36,6 @@ where
     K: DBKey,
     V: Serialize + DeserializeOwned,
 {
-    /// Opens an existing SSTable file and loads its index into memory.
     pub fn open(path: &Path) -> Result<Self> {
         let file = OpenOptions::new().read(true).open(path)?;
         let mut reader = BufReader::new(file);
@@ -50,7 +51,7 @@ where
         reader.read_exact(&mut buf)?;
         let index_offset = u64::from_le_bytes(buf);
         reader.read_exact(&mut buf)?;
-        let _index_size = u64::from_le_bytes(buf);
+        let meta_offset = u64::from_le_bytes(buf);
         reader.read_exact(&mut buf)?;
         let id = SSTableId(u64::from_le_bytes(buf));
         reader.read_exact(&mut buf)?;
@@ -60,18 +61,26 @@ where
             return Err(Error::Corruption("Invalid magic number".to_string()));
         }
 
-        // Seek to the index block and read it using the protected framing
+        // Seek to the index block and read it
         reader.seek(SeekFrom::Start(index_offset))?;
         let index: BTreeMap<K, u64> = read_record(&mut reader)?.ok_or_else(|| {
             Error::Corruption("SSTable index block is missing or empty".to_string())
+        })?;
+
+        // Seek to the meta block and read it
+        reader.seek(SeekFrom::Start(meta_offset))?;
+        let meta: TableMeta<K> = read_record(&mut reader)?.ok_or_else(|| {
+            Error::Corruption("SSTable meta block is missing or empty".to_string())
         })?;
 
         Ok(SSTable {
             path: path.to_path_buf(),
             reader: Mutex::new(reader),
             index,
+            meta,
             id,
             index_offset,
+            file_size: file_len,
             _phantom: PhantomData,
         })
     }
@@ -89,6 +98,38 @@ where
     /// Returns the number of entries in this SSTable.
     pub fn len(&self) -> usize {
         self.index.len()
+    }
+
+    /// Returns the file size in bytes.
+    pub fn file_size(&self) -> u64 {
+        self.file_size
+    }
+
+    /// Returns the minimum key in this SSTable.
+    pub fn min_key(&self) -> &K {
+        &self.meta.min_key
+    }
+
+    /// Returns the maximum key in this SSTable.
+    pub fn max_key(&self) -> &K {
+        &self.meta.max_key
+    }
+
+    /// Returns the total number of entries from metadata.
+    pub fn num_entries(&self) -> u64 {
+        self.meta.num_entries
+    }
+
+    /// Checks if this SSTable's key range overlaps with another SSTable.
+    pub fn overlaps(&self, other: &Self) -> bool {
+        self.overlaps_range(other.min_key(), other.max_key())
+    }
+
+    /// Checks if this SSTable's key range overlaps with the given range.
+    pub fn overlaps_range(&self, min: &K, max: &K) -> bool {
+        // [self.min, self.max] and [min, max] overlap if:
+        // self.min <= max AND min <= self.max
+        self.min_key() <= max && min <= self.max_key()
     }
 
     /// Retrieves a ValueEntry for a given key from SSTable file on disk.
@@ -119,21 +160,45 @@ where
         let mut writer = BufWriter::new(file);
         let mut index = BTreeMap::new();
 
+        let mut min_key = None;
+        let mut max_key = None;
+        let mut num_entries = 0;
+
         let mut current_offset = 0;
-        for (_, item) in iter.enumerate() {
+        for item in iter {
             let entry = item?;
+            if min_key.is_none() {
+                min_key = Some(entry.key.clone());
+            }
+            max_key = Some(entry.key.clone());
+            num_entries += 1;
+
             let bytes_written = write_record(&mut writer, &entry)?;
             index.insert(entry.key.clone(), current_offset);
             current_offset += bytes_written;
         }
 
+        let min_key = min_key.ok_or_else(|| {
+            Error::Corruption("Cannot write an empty SSTable".to_string())
+        })?;
+        let max_key = max_key.unwrap();
+
         // Write the index block
         let index_offset = current_offset;
         let index_size = write_record(&mut writer, &index)?;
 
+        // Write the meta block
+        let meta_offset = index_offset + index_size;
+        let meta = TableMeta {
+            min_key,
+            max_key,
+            num_entries,
+        };
+        write_record(&mut writer, &meta)?;
+
         // Write the footer
         writer.write_all(&index_offset.to_le_bytes())?;
-        writer.write_all(&index_size.to_le_bytes())?;
+        writer.write_all(&meta_offset.to_le_bytes())?;
         writer.write_all(&id.0.to_le_bytes())?;
         writer.write_all(&MAGIC_NUMBER.to_le_bytes())?;
         writer.flush()?;

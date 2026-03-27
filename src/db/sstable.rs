@@ -178,9 +178,8 @@ where
             current_offset += bytes_written;
         }
 
-        let min_key = min_key.ok_or_else(|| {
-            Error::Corruption("Cannot write an empty SSTable".to_string())
-        })?;
+        let min_key = min_key
+            .ok_or_else(|| Error::Corruption("Cannot write an empty SSTable".to_string()))?;
         let max_key = max_key.unwrap();
 
         // Write the index block

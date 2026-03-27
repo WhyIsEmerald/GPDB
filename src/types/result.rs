@@ -1,0 +1,18 @@
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Data corruption: {0}")]
+    Corruption(String),
+
+    #[error("Serialization error: {0}")]
+    Serialization(String),
+
+    #[error("Invalid data: {0}")]
+    InvalidData(String),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;

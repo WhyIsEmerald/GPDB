@@ -7,51 +7,51 @@ First off, thank you for considering contributing. Every contribution helps to i
 We follow a standard GitHub fork-and-pull workflow:
 
 1.  **Fork the repository** to your own GitHub account.
-2.  **Clone your fork** to your local machine: `git clone https://github.com/YourUsername/GPDB.git`
-3.  **Create a new branch** for your changes: `git checkout -b your-feature-name`
+2.  **Clone your fork** to your local machine: `git clone https://github.com/YourUsername/gpdb.git`
+3.  **Create a new branch** for your changes: `git checkout -b <type>/<topic>` (See Branch Naming below).
 4.  **Make your changes**, ensuring you follow the guidelines below.
-5.  **Commit your changes** using the commit message format.
-6.  **Push your branch** to your fork: `git push origin your-feature-name`
+5.  **Commit your changes** using the Conventional Commits format.
+6.  **Push your branch** to your fork: `git push origin <type>/<topic>`
 7.  **Submit a Pull Request** from your feature branch to the main GPDB repository.
+
+## Branch Naming Standards
+
+To keep the repository organized, all branches must follow the `<type>/<short-description>` format:
+
+| Type | Purpose | Example |
+| :--- | :--- | :--- |
+| `feat/` | A new feature or capability. | `feat/bloom-filters` |
+| `fix/` | A bug fix. | `fix/manifest-corruption` |
+| `refactor/` | Code change that neither fixes a bug nor adds a feature. | `refactor/io-layer` |
+| `docs/` | Documentation changes only. | `docs/api-examples` |
+| `chore/` | Maintenance, dependencies, or CI/CD updates. | `chore/update-serde` |
+| `test/` | Adding or correcting tests. | `test/wal-recovery` |
 
 ## Commit Message Guidelines
 
-All commit messages must follow the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) specification. This helps in maintaining a clear and readable commit history.
+All commit messages must follow the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) specification. 
 
-The commit message should be structured as follows:
-
+**Format:**
 ```
 <type>(<scope>): <subject>
-
-[optional body]
-
-[optional footer(s)]
 ```
-
-**Common Types:**
-
-*   `feat`: A new feature.
-*   `fix`: A bug fix.
-*   `test`: Adding missing tests or correcting existing tests.
-*   `chore`: Changes to the build process or auxiliary tools and libraries.
-*   `docs`: Documentation only changes.
-*   `refactor`: A code change that neither fixes a bug nor adds a feature.
-*   `style`: Changes that do not affect the meaning of the code (white-space, formatting, etc).
 
 **Example:**
+`feat(sstable): implement sequential iterator`
 
-```
-feat(db): Implement memtable flushing to sstables
+## Pull Request Standards
 
-This commit introduces the core feature of flushing the memtable to
-disk as an sstable when it reaches its configured size.
-```
+To ensure a smooth workflow, **Pull Request titles must match the branch naming type and topic.**
 
-## Code Style and Comments
+**Format:**
+`<type>/<topic>`
 
-*   **Code Style:** Follow the idiomatic style of the language you are working in (Go or Rust). Run `go fmt` or `cargo fmt` before committing to ensure consistent formatting.
-*   **Comments:** Comments should be used sparingly. The code should be as self-documenting as possible.
-    *   **DO** add comments to explain the *why* behind a piece of code, especially for complex algorithms, non-obvious logic, or important trade-offs; Always add comments for functions, methods, custom types , and classes, inorder to make them easy to use.
-    *   **DO NOT** add comments that simply restate what the code is doing. For example, avoid comments like `// increment i`.
+**Example:**
+If your branch is `feat/background-compaction`, your PR title should be `feat/background-compaction`.
 
-Thank you for your contribution!
+## Code Style
+
+*   **Format**: Run `cargo fmt` before committing to ensure consistent code style.
+*   **Comments**: Focus on the **Why**, not the **What**. Public API members should always be documented.
+
+Thank you for helping build a better storage engine!

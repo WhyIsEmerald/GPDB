@@ -1,9 +1,13 @@
 use crate::db::compaction::Compactor;
-use crate::{DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId, Wal};
+use crate::{
+    CompactionResult, CompactionTask, DBKey, Error, LogEntry, Manifest, ManifestEntry, MemTable,
+    Result, SSTable, SSTableId, Wal,
+};
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 
 const MANIFEST_FILE_NAME: &str = "MANIFEST";
 const WAL_FILE_NAME: &str = "wal.log";
@@ -14,8 +18,8 @@ const LEVEL_MULTIPLIER: u32 = 10;
 /// The main database struct, which orchestrates the MemTable, WAL, and SSTables.
 pub struct DB<K, V>
 where
-    K: DBKey,
-    V: serde::Serialize + serde::de::DeserializeOwned,
+    K: DBKey + Send + 'static,
+    V: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
 {
     path: PathBuf,
     memtable: MemTable<K, V>,
@@ -25,12 +29,14 @@ where
     next_id: SSTableId,
     max_memtable_size: usize,
     memtable_size: usize,
+    compaction_tx: Sender<CompactionTask<K, V>>,
+    compaction_rx: Receiver<CompactionResult<K, V>>,
 }
 
 impl<K, V> DB<K, V>
 where
-    K: DBKey,
-    V: serde::Serialize + serde::de::DeserializeOwned,
+    K: DBKey + Send + 'static,
+    V: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
 {
     /// Opens the database at a given path.
     pub fn open(path: &Path, max_memtable_size: usize) -> Result<Self> {
@@ -100,6 +106,13 @@ where
             wal = Wal::create(&wal_path)?;
         }
 
+        let (task_tx, task_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            Compactor::run_worker::<K, V>(task_rx, result_tx);
+        });
+
         Ok(DB {
             path: path.to_path_buf(),
             memtable,
@@ -109,11 +122,14 @@ where
             next_id,
             max_memtable_size,
             memtable_size: 0,
+            compaction_tx: task_tx,
+            compaction_rx: result_rx,
         })
     }
 
-    /// Puts a key-value pair into the database.
     pub fn put(&mut self, key: K, value: V) -> Result<()> {
+        self.handle_compaction_results()?;
+
         let value_size = std::mem::size_of_val(&value);
         let key_size = std::mem::size_of_val(&key);
         let arc_value = Arc::new(value);
@@ -131,38 +147,8 @@ where
         Ok(())
     }
 
-    /// Checks if any level needs compaction and runs it.
-    fn check_compaction(&mut self) -> Result<()> {
-        // Check L0 first
-        if self.levels[0].len() >= L0_COMPACTION_THRESHOLD {
-            self.compact_l0()?;
-        }
-
-        // Check higher levels
-        for level in 1..self.levels.len() {
-            if self.level_current_size(level) > self.level_max_size(level) {
-                self.compact_level(level)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn level_max_size(&self, level: usize) -> u64 {
-        if level == 0 {
-            return 0; // L0 is count-based
-        }
-        BASE_LEVEL_SIZE * (LEVEL_MULTIPLIER.pow((level - 1) as u32) as u64)
-    }
-
-    fn level_current_size(&self, level: usize) -> u64 {
-        if level >= self.levels.len() {
-            return 0;
-        }
-        self.levels[level].iter().map(|s| s.file_size()).sum()
-    }
-
-    /// Deletes a key from the database.
     pub fn delete(&mut self, key: K) -> Result<()> {
+        self.handle_compaction_results()?;
         let log_entry = LogEntry::Delete(key.clone());
         self.wal.append(&log_entry)?;
         self.wal.flush()?;
@@ -170,7 +156,6 @@ where
         Ok(())
     }
 
-    /// Retrieves a value for a given key from the database.
     pub fn get(&self, key: &K) -> Result<Option<Arc<V>>> {
         if let Some(entry) = self.memtable.get_entry(key) {
             if entry.is_tombstone {
@@ -189,13 +174,74 @@ where
                 }
             }
         }
-
         Ok(None)
     }
 
-    /// Flushes the MemTable to an SSTable and updates the Manifest.
+    fn handle_compaction_results(&mut self) -> Result<()> {
+        while let Ok(result) = self.compaction_rx.try_recv() {
+            self.apply_compaction_result(result)?;
+        }
+        Ok(())
+    }
+
+    fn check_compaction(&mut self) -> Result<()> {
+        if self.levels[0].len() >= L0_COMPACTION_THRESHOLD {
+            // L0 -> L1
+            let sstables = self.levels[0].drain(..).collect();
+            self.trigger_compaction(sstables, 1)?;
+        }
+
+        for level in 1..self.levels.len() {
+            if self.level_current_size(level) > self.level_max_size(level) {
+                // Ln -> Ln+1
+                let candidate = self.levels[level].remove(0);
+                let mut sstables = vec![candidate];
+                
+                if level + 1 < self.levels.len() {
+                    let overlaps = Compactor::find_overlapping_sstables(&sstables[0], &self.levels[level+1]);
+                    let mut sorted_idx = overlaps;
+                    sorted_idx.sort_unstable_by(|a, b| b.cmp(a));
+                    for idx in sorted_idx {
+                        sstables.push(self.levels[level+1].remove(idx));
+                    }
+                }
+                self.trigger_compaction(sstables, level + 1)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn trigger_compaction(&mut self, sstables: Vec<SSTable<K, V>>, target_level: usize) -> Result<()> {
+        let id = self.next_id;
+        self.next_id = SSTableId(id.0 + 1);
+        
+        let filename = format!("L{}-{}.sst", target_level, id);
+        let output_path = self.path.join(&filename);
+
+        let task = CompactionTask::Compact {
+            sstables,
+            output_path,
+            next_id: id,
+            target_level,
+        };
+
+        self.compaction_tx.send(task).ok();
+        Ok(())
+    }
+
+    fn level_max_size(&self, level: usize) -> u64 {
+        if level == 0 { 0 } else {
+            BASE_LEVEL_SIZE * (LEVEL_MULTIPLIER.pow((level - 1) as u32) as u64)
+        }
+    }
+
+    fn level_current_size(&self, level: usize) -> u64 {
+        self.levels.get(level).map_or(0, |l| l.iter().map(|s| s.file_size()).sum())
+    }
+
     fn flush_memtable(&mut self) -> Result<()> {
         let id = self.next_id;
+        self.next_id = SSTableId(id.0 + 1);
         let filename = format!("L0-{}.sst", id);
         let sstable_path = self.path.join(&filename);
 
@@ -205,137 +251,60 @@ where
             level: 0,
             path: PathBuf::from(filename),
         })?;
-        self.next_id = SSTableId(id.0 + 1);
         self.manifest.append(&ManifestEntry::NextID(self.next_id))?;
         self.manifest.flush()?;
 
-        if self.levels.is_empty() {
-            self.levels.push(Vec::new());
-        }
+        if self.levels.is_empty() { self.levels.push(Vec::new()); }
         self.levels[0].push(new_sstable);
         self.levels[0].sort_by_key(|sst| sst.id());
 
         self.memtable.clear();
         self.memtable_size = 0;
         self.wal.clear()?;
-
         Ok(())
     }
 
-    /// Merges all L0 SSTables into a single L1 SSTable.
-    fn compact_l0(&mut self) -> Result<()> {
-        let l0_sstables = &self.levels[0];
-        let id = self.next_id;
-        let filename = format!("L1-{}.sst", id);
-        let l1_path = self.path.join(&filename);
+    fn apply_compaction_result(&mut self, result: CompactionResult<K, V>) -> Result<()> {
+        match result {
+            CompactionResult::Success { sstable, level, removed_ids } => {
+                let mut old_paths = Vec::new();
+                for id in &removed_ids {
+                    for l in 0..self.levels.len() {
+                        if let Some(pos) = self.levels[l].iter().position(|s| s.id() == *id) {
+                            let sst = &self.levels[l][pos];
+                            if let Some(file_name) = sst.path().file_name() {
+                                self.manifest.append(&ManifestEntry::RemoveSSTable {
+                                    level: l, path: PathBuf::from(file_name),
+                                })?;
+                                old_paths.push(sst.path().to_path_buf());
+                            }
+                        }
+                    }
+                }
 
-        let new_l1_sstable = Compactor::compact(l0_sstables, &l1_path, id)?;
+                if let Some(new_file_name) = sstable.path().file_name() {
+                    self.manifest.append(&ManifestEntry::AddSSTable {
+                        level, path: PathBuf::from(new_file_name),
+                    })?;
+                }
+                self.manifest.flush()?;
 
-        // Update Manifest
-        for sst in l0_sstables {
-            if let Some(file_name) = sst.path().file_name() {
-                self.manifest.append(&ManifestEntry::RemoveSSTable {
-                    level: 0,
-                    path: PathBuf::from(file_name),
-                })?;
+                for id in removed_ids {
+                    for l in 0..self.levels.len() {
+                        self.levels[l].retain(|s| s.id() != id);
+                    }
+                }
+
+                if level >= self.levels.len() {
+                    self.levels.resize_with(level + 1, Vec::new);
+                }
+                self.levels[level].push(sstable);
+                self.levels[level].sort_by_key(|s| s.id());
+
+                for path in old_paths { let _ = std::fs::remove_file(path); }
+                Ok(())
             }
+            CompactionResult::Failure(e) => Err(Error::Corruption(format!("Compaction worker failed: {}", e))),
         }
-        self.manifest.append(&ManifestEntry::AddSSTable {
-            level: 1,
-            path: PathBuf::from(filename),
-        })?;
-
-        self.next_id = SSTableId(id.0 + 1);
-        self.manifest.append(&ManifestEntry::NextID(self.next_id))?;
-        self.manifest.flush()?;
-
-        // Update memory state
-        let old_l0_paths: Vec<PathBuf> = self.levels[0]
-            .iter()
-            .map(|s| s.path().to_path_buf())
-            .collect();
-        self.levels[0].clear();
-
-        if self.levels.len() < 2 {
-            self.levels.resize_with(2, Vec::new);
-        }
-        self.levels[1].push(new_l1_sstable);
-        self.levels[1].sort_by_key(|sst| sst.id());
-
-        // Cleanup
-        for path in old_l0_paths {
-            let _ = std::fs::remove_file(path);
-        }
-
-        Ok(())
-    }
-
-    /// Merges one SSTable from Ln with overlapping SSTables from Ln+1.
-    fn compact_level(&mut self, level: usize) -> Result<()> {
-        if level >= self.levels.len() - 1 {
-            self.levels.push(Vec::new());
-        }
-
-        // Pick a candidate from Ln (Simple: the oldest/first one)
-        let candidate = self.levels[level].remove(0);
-
-        // Find overlaps in Ln+1
-        let overlapping_indices =
-            Compactor::find_overlapping_sstables(&candidate, &self.levels[level + 1]);
-
-        let mut to_compact = vec![candidate];
-        let mut old_paths = vec![to_compact[0].path().to_path_buf()];
-
-        // Remove overlapping files from Ln+1 and add to compact list
-        let mut sorted_indices = overlapping_indices.clone();
-        sorted_indices.sort_unstable_by(|a, b| b.cmp(a));
-
-        for idx in sorted_indices {
-            let sst = self.levels[level + 1].remove(idx);
-            old_paths.push(sst.path().to_path_buf());
-            to_compact.push(sst);
-        }
-
-        // Compact them
-        let id = self.next_id;
-        let next_level = level + 1;
-        let filename = format!("L{}-{}.sst", next_level, id);
-        let output_path = self.path.join(&filename);
-
-        let new_sstable = Compactor::compact(&to_compact, &output_path, id)?;
-
-        // Update Manifest
-        // Candidate was from 'level'
-        self.manifest.append(&ManifestEntry::RemoveSSTable {
-            level,
-            path: PathBuf::from(to_compact[0].path().file_name().unwrap()),
-        })?;
-        // Others were from 'level+1'
-        for sst in to_compact.iter().skip(1) {
-            self.manifest.append(&ManifestEntry::RemoveSSTable {
-                level: level + 1,
-                path: PathBuf::from(sst.path().file_name().unwrap()),
-            })?;
-        }
-
-        self.manifest.append(&ManifestEntry::AddSSTable {
-            level: level + 1,
-            path: PathBuf::from(filename),
-        })?;
-
-        self.next_id = SSTableId(id.0 + 1);
-        self.manifest.append(&ManifestEntry::NextID(self.next_id))?;
-        self.manifest.flush()?;
-
-        // Update memory state
-        self.levels[level + 1].push(new_sstable);
-        self.levels[level + 1].sort_by_key(|sst| sst.id());
-
-        // Cleanup
-        for path in old_paths {
-            let _ = std::fs::remove_file(path);
-        }
-
-        Ok(())
     }
 }

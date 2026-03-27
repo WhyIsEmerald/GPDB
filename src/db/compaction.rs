@@ -4,30 +4,43 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::path::PathBuf;
 use std::{cmp::Ordering, collections::BinaryHeap, path::Path};
 
+/// A request sent to the background compaction thread.
 pub enum CompactionTask<K, V>
 where
     K: DBKey,
     V: Serialize + DeserializeOwned,
 {
+    /// Merge the given SSTables into a new one.
     Compact {
+        /// The SSTables to be merged.
         sstables: Vec<SSTable<K, V>>,
+        /// The file path for the resulting SSTable.
         output_path: PathBuf,
+        /// The ID for the resulting SSTable.
         next_id: SSTableId,
+        /// The level where the output SSTable will be placed.
         target_level: usize,
     },
+    /// Tell the background thread to stop.
     Shutdown,
 }
 
+/// The result of a background compaction task.
 pub enum CompactionResult<K, V>
 where
     K: DBKey,
     V: Serialize + DeserializeOwned,
 {
+    /// Compaction finished successfully.
     Success {
+        /// The newly created SSTable.
         sstable: SSTable<K, V>,
+        /// The level where the new SSTable was placed.
         level: usize,
+        /// The IDs of the SSTables that were merged and should be removed from memory.
         removed_ids: Vec<SSTableId>,
     },
+    /// Compaction failed with an error message.
     Failure(String),
 }
 
@@ -53,14 +66,8 @@ impl<K: DBKey, V> Eq for MergeElement<K, V> {}
 
 impl<K: DBKey, V> Ord for MergeElement<K, V> {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Rust's BinaryHeap is a Max-Heap.
-        // To make it a Min-Heap for keys, we compare other to self.
         match other.entry.key.cmp(&self.entry.key) {
-            Ordering::Equal => {
-                // If keys are equal, we want the highest ID to be "greater"
-                // so it pops off the Max-Heap first.
-                self.sstable_id.cmp(&other.sstable_id)
-            }
+            Ordering::Equal => self.sstable_id.cmp(&other.sstable_id),
             ord => ord,
         }
     }
@@ -80,7 +87,10 @@ where
     K: DBKey,
     V: Serialize + DeserializeOwned,
 {
-    // Create a new MergeStream from a slice of SSTables.
+    /// Create a new MergeStream from a slice of SSTables.
+    /// 
+    /// # Arguments
+    /// * `sstables` - The set of sorted SSTables to be merged and deduplicated.
     pub fn new(sstables: &[SSTable<K, V>]) -> Result<Self> {
         let mut iters = Vec::with_capacity(sstables.len());
         let mut heap = BinaryHeap::with_capacity(sstables.len());
@@ -156,6 +166,10 @@ pub struct Compactor;
 
 impl Compactor {
     /// Finds all SSTables in `target_level` that overlap with the `candidate`.
+    /// 
+    /// # Arguments
+    /// * `candidate` - The SSTable whose range we are checking.
+    /// * `target_level` - The level of SSTables to check for overlaps.
     pub fn find_overlapping_sstables<K, V>(
         candidate: &SSTable<K, V>,
         target_level: &[SSTable<K, V>],
@@ -174,6 +188,10 @@ impl Compactor {
     }
 
     /// Finds all SSTables in `target_level` that overlap with the range defined by a set of `sstables`.
+    /// 
+    /// # Arguments
+    /// * `sstables` - The source SSTables defining the key range.
+    /// * `target_level` - The level to search for overlapping files.
     pub fn find_range_overlapping_sstables<K, V>(
         sstables: &[SSTable<K, V>],
         target_level: &[SSTable<K, V>],
@@ -199,6 +217,11 @@ impl Compactor {
     }
 
     /// Merges a slice of SSTables into a single new SSTable at the given path.
+    /// 
+    /// # Arguments
+    /// * `sstables` - The input SSTables to be merged.
+    /// * `output_path` - The filesystem path where the new SSTable will be written.
+    /// * `new_id` - The unique ID to assign to the new SSTable.
     pub fn compact<K, V>(
         sstables: &[SSTable<K, V>],
         output_path: &Path,
@@ -224,6 +247,52 @@ impl Compactor {
         V: Serialize + DeserializeOwned,
     {
         Self::compact(sstables, output_path, new_id)
+    }
+
+    /// The main entry point for the background worker thread.
+    /// 
+    /// # Arguments
+    /// * `receiver` - The channel endpoint to receive new compaction tasks.
+    /// * `sender` - The channel endpoint to report completion or failure back to the DB.
+    pub fn run_worker<K, V>(
+        receiver: std::sync::mpsc::Receiver<CompactionTask<K, V>>,
+        sender: std::sync::mpsc::Sender<CompactionResult<K, V>>,
+    ) where
+        K: DBKey + Send + 'static,
+        V: Serialize + DeserializeOwned + Send + 'static,
+    {
+        while let Ok(task) = receiver.recv() {
+            match task {
+                CompactionTask::Compact {
+                    sstables,
+                    output_path,
+                    next_id,
+                    target_level,
+                } => {
+                    // Extract IDs before we move/merge them
+                    let removed_ids: Vec<SSTableId> = sstables.iter().map(|s| s.id()).collect();
+                    
+                    let result = Self::compact(&sstables, &output_path, next_id);
+                    match result {
+                        Ok(sstable) => {
+                            sender
+                                .send(CompactionResult::Success {
+                                    sstable,
+                                    level: target_level,
+                                    removed_ids,
+                                })
+                                .ok();
+                        }
+                        Err(e) => {
+                            sender.send(CompactionResult::Failure(e.to_string())).ok();
+                        }
+                    }
+                }
+                CompactionTask::Shutdown => {
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -252,10 +321,13 @@ mod tests {
     #[test]
     fn test_key_priority() {
         let mut heap = BinaryHeap::new();
+
+        // Push keys in "wrong" order
         heap.push(make_el("C", 1, 0));
         heap.push(make_el("A", 1, 0));
         heap.push(make_el("B", 1, 0));
 
+        // BinaryHeap should pop smallest key first because of our flipped Ord
         assert_eq!(heap.pop().unwrap().entry.key, "A");
         assert_eq!(heap.pop().unwrap().entry.key, "B");
         assert_eq!(heap.pop().unwrap().entry.key, "C");
@@ -274,6 +346,7 @@ mod tests {
         let winner = heap.pop().unwrap();
         assert_eq!(winner.entry.key, "A");
         assert_eq!(winner.sstable_id, SSTableId(10));
+
         assert_eq!(heap.pop().unwrap().sstable_id, SSTableId(5));
         assert_eq!(heap.pop().unwrap().sstable_id, SSTableId(2));
     }
@@ -322,6 +395,7 @@ mod tests {
 
         let sstables = vec![sst1, sst2];
         let stream = MergeStream::new(&sstables).unwrap();
+
         let results: Vec<Entry<String, String>> = stream.map(|r| r.unwrap()).collect();
 
         // Check deduplication (A should be v2-new)
@@ -331,6 +405,9 @@ mod tests {
         // Check sorting and inclusion
         assert_eq!(results[1].key, "B");
         assert_eq!(results[2].key, "C");
+        assert_eq!(results[3].key, "D");
+        assert_eq!(results[4].key, "E");
+        assert_eq!(results.len(), 5);
     }
 
     #[test]

@@ -88,7 +88,7 @@ where
     V: Serialize + DeserializeOwned,
 {
     /// Create a new MergeStream from a slice of SSTables.
-    /// 
+    ///
     /// # Arguments
     /// * `sstables` - The set of sorted SSTables to be merged and deduplicated.
     pub fn new(sstables: &[SSTable<K, V>]) -> Result<Self> {
@@ -166,7 +166,7 @@ pub struct Compactor;
 
 impl Compactor {
     /// Finds all SSTables in `target_level` that overlap with the `candidate`.
-    /// 
+    ///
     /// # Arguments
     /// * `candidate` - The SSTable whose range we are checking.
     /// * `target_level` - The level of SSTables to check for overlaps.
@@ -188,7 +188,7 @@ impl Compactor {
     }
 
     /// Finds all SSTables in `target_level` that overlap with the range defined by a set of `sstables`.
-    /// 
+    ///
     /// # Arguments
     /// * `sstables` - The source SSTables defining the key range.
     /// * `target_level` - The level to search for overlapping files.
@@ -217,7 +217,7 @@ impl Compactor {
     }
 
     /// Merges a slice of SSTables into a single new SSTable at the given path.
-    /// 
+    ///
     /// # Arguments
     /// * `sstables` - The input SSTables to be merged.
     /// * `output_path` - The filesystem path where the new SSTable will be written.
@@ -250,7 +250,7 @@ impl Compactor {
     }
 
     /// The main entry point for the background worker thread.
-    /// 
+    ///
     /// # Arguments
     /// * `receiver` - The channel endpoint to receive new compaction tasks.
     /// * `sender` - The channel endpoint to report completion or failure back to the DB.
@@ -271,7 +271,7 @@ impl Compactor {
                 } => {
                     // Extract IDs before we move/merge them
                     let removed_ids: Vec<SSTableId> = sstables.iter().map(|s| s.id()).collect();
-                    
+
                     let result = Self::compact(&sstables, &output_path, next_id);
                     match result {
                         Ok(sstable) => {

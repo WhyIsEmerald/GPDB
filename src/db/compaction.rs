@@ -1,7 +1,35 @@
 use crate::db::sstable::SSTableIterator;
 use crate::{DBKey, Entry, Result, SSTable, SSTableId};
 use serde::{Serialize, de::DeserializeOwned};
+use std::path::PathBuf;
 use std::{cmp::Ordering, collections::BinaryHeap, path::Path};
+
+pub enum CompactionTask<K, V>
+where
+    K: DBKey,
+    V: Serialize + DeserializeOwned,
+{
+    Compact {
+        sstables: Vec<SSTable<K, V>>,
+        output_path: PathBuf,
+        next_id: SSTableId,
+        target_level: usize,
+    },
+    Shutdown,
+}
+
+pub enum CompactionResult<K, V>
+where
+    K: DBKey,
+    V: Serialize + DeserializeOwned,
+{
+    Success {
+        sstable: SSTable<K, V>,
+        level: usize,
+        removed_ids: Vec<SSTableId>,
+    },
+    Failure(String),
+}
 
 pub struct MergeElement<K, V> {
     pub sstable_id: SSTableId,

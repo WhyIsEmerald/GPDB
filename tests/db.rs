@@ -1,5 +1,4 @@
 use gpdb::DB;
-use std::sync::Arc;
 use tempfile::TempDir;
 
 #[test]
@@ -138,12 +137,18 @@ fn test_db_manifest_complex_reconciliation() {
     }
 
     let db_reopened: DB<String, String> = DB::open(path, 1024).unwrap();
-    assert_eq!(db_reopened.get(&"a".to_string()).unwrap().unwrap().as_str(), "v0");
-    assert_eq!(db_reopened.get(&"e".to_string()).unwrap().unwrap().as_str(), "v0");
-    }
+    assert_eq!(
+        db_reopened.get(&"a".to_string()).unwrap().unwrap().as_str(),
+        "v0"
+    );
+    assert_eq!(
+        db_reopened.get(&"e".to_string()).unwrap().unwrap().as_str(),
+        "v0"
+    );
+}
 
-    #[test]
-    fn test_db_level_n_compaction() {
+#[test]
+fn test_db_level_n_compaction() {
     let tmp_dir = TempDir::new().unwrap();
     let path = tmp_dir.path();
 
@@ -167,5 +172,4 @@ fn test_db_manifest_complex_reconciliation() {
 
     let val = db.get(&"key-0".to_string()).unwrap().unwrap();
     assert_eq!(val.as_str(), "val");
-    }
-
+}

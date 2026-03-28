@@ -6,7 +6,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// The fixed size of the footer (32 bytes)
 ///
@@ -15,14 +15,17 @@ const FOOTER_SIZE: u64 = 8 + 8 + 8 + 8;
 /// Unique identifier for sstable files
 const MAGIC_NUMBER: u64 = 0xDEADC0DEBEEFCAFF;
 
+/// A Sorted String Table (SSTable) is an immutable, on-disk map from keys to values.
+/// It uses an index for fast lookups and metadata for range-based overlap checks.
 pub struct SSTable<K, V>
 where
     K: DBKey,
     V: Serialize + DeserializeOwned,
 {
     path: PathBuf,
+    // Arc allows multiple handles to the same underlying file and reader
     // Mutex allows interior mutability so we can seek/read while having a &self reference
-    reader: Mutex<BufReader<File>>,
+    reader: Arc<Mutex<BufReader<File>>>,
     index: BTreeMap<K, u64>,
     meta: TableMeta<K>,
     id: SSTableId,
@@ -31,11 +34,34 @@ where
     _phantom: PhantomData<(K, V)>,
 }
 
+impl<K, V> Clone for SSTable<K, V>
+where
+    K: DBKey,
+    V: Serialize + DeserializeOwned,
+{
+    fn clone(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            reader: Arc::clone(&self.reader),
+            index: self.index.clone(),
+            meta: self.meta.clone(),
+            id: self.id,
+            index_offset: self.index_offset,
+            file_size: self.file_size,
+            _phantom: PhantomData,
+        }
+    }
+}
+
 impl<K, V> SSTable<K, V>
 where
     K: DBKey,
     V: Serialize + DeserializeOwned,
 {
+    /// Opens an existing SSTable file from disk and loads its index and metadata into memory.
+    /// 
+    /// # Arguments
+    /// * `path` - The filesystem path to the .sst file.
     pub fn open(path: &Path) -> Result<Self> {
         let file = OpenOptions::new().read(true).open(path)?;
         let mut reader = BufReader::new(file);
@@ -75,7 +101,7 @@ where
 
         Ok(SSTable {
             path: path.to_path_buf(),
-            reader: Mutex::new(reader),
+            reader: Arc::new(Mutex::new(reader)),
             index,
             meta,
             id,
@@ -95,7 +121,7 @@ where
         self.id
     }
 
-    /// Returns the number of entries in this SSTable.
+    /// Returns the number of entries in this SSTable (from the in-memory index).
     pub fn len(&self) -> usize {
         self.index.len()
     }
@@ -133,6 +159,9 @@ where
     }
 
     /// Retrieves a ValueEntry for a given key from SSTable file on disk.
+    /// 
+    /// # Arguments
+    /// * `key` - The key to search for.
     pub fn get(&self, key: &K) -> Result<Option<ValueEntry<V>>> {
         let offset = match self.index.get(key) {
             Some(offset) => *offset,
@@ -150,6 +179,12 @@ where
         Ok(entry.map(|e| e.value))
     }
 
+    /// Writes a stream of sorted entries to a new SSTable file.
+    /// 
+    /// # Arguments
+    /// * `path` - The path where the new file will be created.
+    /// * `iter` - An iterator over sorted Entry objects.
+    /// * `id` - The unique identifier for this table.
     pub fn write_from_iter<I>(path: &Path, iter: I, id: SSTableId) -> Result<Self>
     where
         K: DBKey,
@@ -207,6 +242,11 @@ where
 
     /// Writes a new SSTable from the contents of a MemTable.
     /// Returns the opened SSTable instance.
+    /// 
+    /// # Arguments
+    /// * `path` - The path where the new file will be created.
+    /// * `memtable` - The in-memory data to persist.
+    /// * `id` - The unique identifier for this table.
     pub fn write_from_memtable(
         path: &Path,
         memtable: &MemTable<K, V>,
@@ -221,7 +261,7 @@ where
         Self::write_from_iter(path, iter, id)
     }
 
-    /// Returns an iterator over the full entries in the SSTable.
+    /// Returns a sequential iterator over all entries in this SSTable.
     pub fn iter(&self) -> Result<SSTableIterator<K, V>> {
         let file = File::open(&self.path)?;
         Ok(SSTableIterator {

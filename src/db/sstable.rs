@@ -17,6 +17,7 @@ const MAGIC_NUMBER: u64 = 0xDEADC0DEBEEFCAFF;
 
 /// A Sorted String Table (SSTable) is an immutable, on-disk map from keys to values.
 /// It uses an index for fast lookups and metadata for range-based overlap checks.
+#[derive(Debug)]
 pub struct SSTable<K, V>
 where
     K: DBKey,
@@ -59,7 +60,7 @@ where
     V: Serialize + DeserializeOwned,
 {
     /// Opens an existing SSTable file from disk and loads its index and metadata into memory.
-    /// 
+    ///
     /// # Arguments
     /// * `path` - The filesystem path to the .sst file.
     pub fn open(path: &Path) -> Result<Self> {
@@ -159,7 +160,7 @@ where
     }
 
     /// Retrieves a ValueEntry for a given key from SSTable file on disk.
-    /// 
+    ///
     /// # Arguments
     /// * `key` - The key to search for.
     pub fn get(&self, key: &K) -> Result<Option<ValueEntry<V>>> {
@@ -180,7 +181,7 @@ where
     }
 
     /// Writes a stream of sorted entries to a new SSTable file.
-    /// 
+    ///
     /// # Arguments
     /// * `path` - The path where the new file will be created.
     /// * `iter` - An iterator over sorted Entry objects.
@@ -242,7 +243,7 @@ where
 
     /// Writes a new SSTable from the contents of a MemTable.
     /// Returns the opened SSTable instance.
-    /// 
+    ///
     /// # Arguments
     /// * `path` - The path where the new file will be created.
     /// * `memtable` - The in-memory data to persist.

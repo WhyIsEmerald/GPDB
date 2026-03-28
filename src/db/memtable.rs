@@ -6,6 +6,7 @@ use std::sync::Arc;
 ///
 /// Keys `K` must implement `DBKey` for hashing, ordering, cloning, and serialization.
 /// Values `V` are stored behind an Arc to avoid expensive clones.
+#[derive(Debug)]
 pub struct MemTable<K, V>
 where
     K: DBKey,

@@ -16,6 +16,7 @@ const BASE_LEVEL_SIZE: u64 = 10 * 1024 * 1024; // 10MB
 const LEVEL_MULTIPLIER: u32 = 10;
 
 /// The main database struct, which orchestrates the MemTable, WAL, and SSTables.
+#[derive(Debug)]
 pub struct DB<K, V>
 where
     K: DBKey + Send + 'static,
@@ -41,10 +42,10 @@ where
     V: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
 {
     /// Opens the database at a given path.
-    /// 
+    ///
     /// This will recover state from the Manifest and data from the WAL.
     /// It also starts the background compaction worker thread.
-    /// 
+    ///
     /// # Arguments
     /// * `path` - The directory where the database files are stored.
     /// * `max_memtable_size` - The threshold in bytes before flushing the MemTable to disk.
@@ -141,9 +142,9 @@ where
     }
 
     /// Puts a key-value pair into the database.
-    /// 
+    ///
     /// This operation is durable (logged to WAL) and will trigger a flush/compaction if needed.
-    /// 
+    ///
     /// # Arguments
     /// * `key` - The key to store.
     /// * `value` - The value associated with the key.
@@ -168,7 +169,7 @@ where
     }
 
     /// Deletes a key from the database by inserting a tombstone.
-    /// 
+    ///
     /// # Arguments
     /// * `key` - The key to delete.
     pub fn delete(&mut self, key: K) -> Result<()> {
@@ -181,9 +182,9 @@ where
     }
 
     /// Retrieves a value for a given key from the database.
-    /// 
+    ///
     /// Searches the MemTable first, then levels of SSTables from newest to oldest.
-    /// 
+    ///
     /// # Arguments
     /// * `key` - The key to look up.
     pub fn get(&self, key: &K) -> Result<Option<Arc<V>>> {
@@ -219,7 +220,9 @@ where
     fn check_compaction(&mut self) -> Result<()> {
         // L0 Trigger: Based on file count
         if self.levels[0].len() >= L0_COMPACTION_THRESHOLD {
-            let any_compacting = self.levels[0].iter().any(|s| self.compacting_ids.contains(&s.id()));
+            let any_compacting = self.levels[0]
+                .iter()
+                .any(|s| self.compacting_ids.contains(&s.id()));
             if !any_compacting {
                 let sstables = self.levels[0].clone();
                 self.trigger_compaction(sstables, 1)?;
@@ -230,20 +233,26 @@ where
         for level in 1..self.levels.len() {
             if self.level_current_size(level) > self.level_max_size(level) {
                 let candidate = &self.levels[level][0];
-                
+
                 if !self.compacting_ids.contains(&candidate.id()) {
                     let mut sstables = vec![candidate.clone()];
-                    
+
                     if level + 1 < self.levels.len() {
-                        let overlaps = Compactor::find_overlapping_sstables(candidate, &self.levels[level+1]);
+                        let overlaps = Compactor::find_overlapping_sstables(
+                            candidate,
+                            &self.levels[level + 1],
+                        );
                         let mut sorted_idx = overlaps;
                         sorted_idx.sort_unstable_by(|a, b| b.cmp(a));
-                        
-                        let overlap_compacting = sorted_idx.iter().any(|&i| self.compacting_ids.contains(&self.levels[level+1][i].id()));
-                        
+
+                        let overlap_compacting = sorted_idx.iter().any(|&i| {
+                            self.compacting_ids
+                                .contains(&self.levels[level + 1][i].id())
+                        });
+
                         if !overlap_compacting {
                             for idx in sorted_idx {
-                                sstables.push(self.levels[level+1][idx].clone());
+                                sstables.push(self.levels[level + 1][idx].clone());
                             }
                             self.trigger_compaction(sstables, level + 1)?;
                         }
@@ -257,18 +266,22 @@ where
     }
 
     /// Sends a list of SSTables to the background thread to be merged.
-    /// 
+    ///
     /// # Arguments
     /// * `sstables` - The files to merge.
     /// * `target_level` - The level where the result should be placed.
-    fn trigger_compaction(&mut self, sstables: Vec<SSTable<K, V>>, target_level: usize) -> Result<()> {
+    fn trigger_compaction(
+        &mut self,
+        sstables: Vec<SSTable<K, V>>,
+        target_level: usize,
+    ) -> Result<()> {
         for sst in &sstables {
             self.compacting_ids.insert(sst.id());
         }
 
         let id = self.next_id;
         self.next_id = SSTableId(id.0 + 1);
-        
+
         let filename = format!("L{}-{}.sst", target_level, id);
         let output_path = self.path.join(&filename);
 
@@ -285,14 +298,18 @@ where
 
     /// Calculates the maximum allowed byte size for a specific level.
     fn level_max_size(&self, level: usize) -> u64 {
-        if level == 0 { 0 } else {
+        if level == 0 {
+            0
+        } else {
             BASE_LEVEL_SIZE * (LEVEL_MULTIPLIER.pow((level - 1) as u32) as u64)
         }
     }
 
     /// Calculates the current total size of all SSTables in a level.
     fn level_current_size(&self, level: usize) -> u64 {
-        self.levels.get(level).map_or(0, |l| l.iter().map(|s| s.file_size()).sum())
+        self.levels
+            .get(level)
+            .map_or(0, |l| l.iter().map(|s| s.file_size()).sum())
     }
 
     /// Flushes the MemTable to a new Level-0 SSTable.
@@ -311,7 +328,9 @@ where
         self.manifest.append(&ManifestEntry::NextID(self.next_id))?;
         self.manifest.flush()?;
 
-        if self.levels.is_empty() { self.levels.push(Vec::new()); }
+        if self.levels.is_empty() {
+            self.levels.push(Vec::new());
+        }
         self.levels[0].push(new_sstable);
         self.levels[0].sort_by_key(|sst| sst.id());
 
@@ -322,22 +341,27 @@ where
     }
 
     /// Atomically applies a successful compaction to the database state.
-    /// 
+    ///
     /// This updates the Manifest, synchronizes the memory levels, and cleans up old files.
-    /// 
+    ///
     /// # Arguments
     /// * `result` - The successful or failed result from the background worker.
     fn apply_compaction_result(&mut self, result: CompactionResult<K, V>) -> Result<()> {
         match result {
-            CompactionResult::Success { sstable, level, original_sstables } => {
-                let removed_ids: HashSet<SSTableId> = original_sstables.iter().map(|s| s.id()).collect();
+            CompactionResult::Success {
+                sstable,
+                level,
+                original_sstables,
+            } => {
+                let removed_ids: HashSet<SSTableId> =
+                    original_sstables.iter().map(|s| s.id()).collect();
 
                 // 1. Log removals to Manifest and release safety locks
                 for sst in &original_sstables {
                     self.compacting_ids.remove(&sst.id());
-                    
+
                     // Identify source level by searching memory state for accurate Manifest logging
-                    let mut source_level = 0; 
+                    let mut source_level = 0;
                     for (l_idx, level_vec) in self.levels.iter().enumerate() {
                         if level_vec.iter().any(|s| s.id() == sst.id()) {
                             source_level = l_idx;
@@ -356,7 +380,8 @@ where
                 // 2. Log new file to Manifest
                 if let Some(new_file_name) = sstable.path().file_name() {
                     self.manifest.append(&ManifestEntry::AddSSTable {
-                        level, path: PathBuf::from(new_file_name),
+                        level,
+                        path: PathBuf::from(new_file_name),
                     })?;
                 }
                 self.manifest.flush()?;
@@ -381,7 +406,10 @@ where
             }
             CompactionResult::Failure(e) => {
                 // If it fails, we must release the locks so the system can try again
-                Err(Error::Corruption(format!("Compaction worker failed: {}", e)))
+                Err(Error::Corruption(format!(
+                    "Compaction worker failed: {}",
+                    e
+                )))
             }
         }
     }

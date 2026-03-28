@@ -4,6 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
 
+#[derive(Debug)]
 pub struct Manifest {
     path: PathBuf,
     writer: BufWriter<File>,

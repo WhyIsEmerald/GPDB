@@ -7,6 +7,7 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 /// `Wal` provides a durable, write-ahead log.
+#[derive(Debug)]
 pub struct Wal<K, V>
 where
     K: Serialize + DeserializeOwned,

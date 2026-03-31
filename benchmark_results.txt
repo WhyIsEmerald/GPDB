@@ -1,0 +1,9 @@
+Phase: Bulk Ingestion           | Ops: 1000000    | Speed: 380158       ops/s | Latency: 2.63     μs/op | Throughput: 17.40    MB/s
+Phase: Random Overwrites        | Ops: 500000     | Speed: 344254       ops/s | Latency: 2.90     μs/op | Throughput: 15.76    MB/s
+Phase: Random Read (Dirty)      | Ops: 100000     | Speed: 474328       ops/s | Latency: 2.11     μs/op | Throughput: 6.33     MB/s
+Phase: Multi-Threaded Ingest    | Ops: 200000     | Speed: 211458       ops/s | Latency: 4.73     μs/op | Throughput: 9.68     MB/s
+Phase: Random Deletions         | Ops: 250000     | Speed: 519353       ops/s | Latency: 1.93     μs/op | Throughput: 6.93     MB/s
+Phase: Compaction Wait          | Ops: 1          | Speed: 0            ops/s | Latency: 5061639.93 μs/op | Throughput: 0.00     MB/s
+Phase: Random Read (Cleaned)    | Ops: 100000     | Speed: 343200       ops/s | Latency: 2.91     μs/op | Throughput: 4.58     MB/s
+>> Read Latency Improvement (via Compaction): -38.21%
+>> Space Amplification Factor: 2.09x (Raw: 77.82MB, Disk: 162.31MB)

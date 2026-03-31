@@ -1,7 +1,7 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use gpdb::{DB, MemTable, LogEntry, ManifestEntry, Wal, Manifest, Entry, ValueEntry};
-use std::sync::Arc;
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use gpdb::{DB, Entry, LogEntry, Manifest, ManifestEntry, MemTable, ValueEntry, Wal};
 use std::io::Cursor;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 pub fn memtable_bench(c: &mut Criterion) {
@@ -10,7 +10,10 @@ pub fn memtable_bench(c: &mut Criterion) {
 
     c.bench_function("memtable_put_30b", |b| {
         b.iter(|| {
-            mem.put(black_box("key-0000000000".to_string()), black_box(val.clone()));
+            mem.put(
+                black_box("key-0000000000".to_string()),
+                black_box(val.clone()),
+            );
         })
     });
 }
@@ -22,7 +25,7 @@ pub fn io_bench(c: &mut Criterion) {
         value: ValueEntry {
             value: Some(Arc::new("value-00000000000000000000".to_string())),
             is_tombstone: false,
-        }
+        },
     };
 
     group.bench_function("write_record_50b", |b| {
@@ -47,11 +50,12 @@ pub fn io_bench(c: &mut Criterion) {
 
 pub fn persistence_bench(c: &mut Criterion) {
     let tmp_dir = TempDir::new().unwrap();
-    
+
     // WAL Bench
     let wal_path = tmp_dir.path().join("wal.log");
     let mut wal: Wal<String, String> = Wal::create(&wal_path).unwrap();
-    let entry: LogEntry<String, String> = LogEntry::Put("key".to_string(), Arc::new("val".to_string()));
+    let entry: LogEntry<String, String> =
+        LogEntry::Put("key".to_string(), Arc::new("val".to_string()));
 
     c.bench_function("wal_append_and_flush", |b| {
         b.iter(|| {
@@ -63,7 +67,10 @@ pub fn persistence_bench(c: &mut Criterion) {
     // Manifest Bench
     let manifest_path = tmp_dir.path().join("MANIFEST");
     let mut manifest = Manifest::create(manifest_path).unwrap();
-    let m_entry = ManifestEntry::AddSSTable { level: 0, path: "L0-1.sst".into() };
+    let m_entry = ManifestEntry::AddSSTable {
+        level: 0,
+        path: "L0-1.sst".into(),
+    };
 
     c.bench_function("manifest_append_and_flush", |b| {
         b.iter(|| {
@@ -77,10 +84,11 @@ pub fn db_orchestration_bench(c: &mut Criterion) {
     let tmp_dir = TempDir::new().unwrap();
     // Use huge MemTable limit to measure pure orchestration speed (avoiding flushes)
     let mut db: DB<String, String> = DB::open(tmp_dir.path(), 100 * 1024 * 1024).unwrap();
-    
+
     c.bench_function("db_put_orchestration", |b| {
         b.iter(|| {
-            db.put(black_box("key".to_string()), black_box("val".to_string())).unwrap();
+            db.put(black_box("key".to_string()), black_box("val".to_string()))
+                .unwrap();
         })
     });
 
@@ -91,5 +99,11 @@ pub fn db_orchestration_bench(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, memtable_bench, io_bench, persistence_bench, db_orchestration_bench);
+criterion_group!(
+    benches,
+    memtable_bench,
+    io_bench,
+    persistence_bench,
+    db_orchestration_bench
+);
 criterion_main!(benches);

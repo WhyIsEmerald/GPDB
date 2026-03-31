@@ -1,4 +1,4 @@
-use gpdb::{DB, DBKey};
+use gpdb::DB;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
@@ -57,7 +57,13 @@ impl Reporter {
                     if parts.len() >= 3 {
                         let name = parts[0].replace("Phase: ", "").trim().to_string();
                         if let Some(speed_part) = parts[2].split(':').nth(1) {
-                            if let Ok(speed) = speed_part.trim().split_whitespace().next().unwrap_or("0").parse::<f64>() {
+                            if let Ok(speed) = speed_part
+                                .trim()
+                                .split_whitespace()
+                                .next()
+                                .unwrap_or("0")
+                                .parse::<f64>()
+                            {
                                 history.insert(name, speed);
                             }
                         }
@@ -76,7 +82,7 @@ impl Reporter {
     fn record(&mut self, metrics: Metrics) -> gpdb::Result<()> {
         let name_padding = " ".repeat(25usize.saturating_sub(metrics.name.len()));
         let speed = metrics.ops_per_sec();
-        
+
         let mut msg = format!(
             "Phase: {}{}| Ops: {:<10} | Speed: {:<12.0} ops/s | Latency: {:<8.2} μs/op | Throughput: {:<8.2} MB/s",
             metrics.name,
@@ -123,11 +129,19 @@ impl Reporter {
         }
 
         if let (Some(before), Some(after)) = (
-            self.results.iter().find(|m| m.name == "Random Read (Dirty)"),
-            self.results.iter().find(|m| m.name == "Random Read (Cleaned)"),
+            self.results
+                .iter()
+                .find(|m| m.name == "Random Read (Dirty)"),
+            self.results
+                .iter()
+                .find(|m| m.name == "Random Read (Cleaned)"),
         ) {
-            let improvement = (before.latency_us() - after.latency_us()) / before.latency_us() * 100.0;
-            let msg = format!(">> Read Latency Improvement (via Compaction): {:.2}%", improvement);
+            let improvement =
+                (before.latency_us() - after.latency_us()) / before.latency_us() * 100.0;
+            let msg = format!(
+                ">> Read Latency Improvement (via Compaction): {:.2}%",
+                improvement
+            );
             println!("{}", msg);
             writeln!(f, "{}", msg)?;
         }
@@ -136,7 +150,9 @@ impl Reporter {
         let amp = on_disk as f64 / raw_bytes as f64;
         let msg = format!(
             ">> Space Amplification Factor: {:.2}x (Raw: {:.2}MB, Disk: {:.2}MB)",
-            amp, raw_bytes as f64 / 1024.0 / 1024.0, on_disk as f64 / 1024.0 / 1024.0
+            amp,
+            raw_bytes as f64 / 1024.0 / 1024.0,
+            on_disk as f64 / 1024.0 / 1024.0
         );
         println!("{}", msg);
         writeln!(f, "{}", msg)?;
@@ -159,8 +175,8 @@ fn main() -> gpdb::Result<()> {
 
     // --- PHASE 1: BULK INGESTION ---
     let num_writes = 1_000_000;
-    let key_size = 14; 
-    let val_size = 34; 
+    let key_size = 14;
+    let val_size = 34;
     let total_bytes = num_writes as u64 * (key_size + val_size);
 
     let start = Instant::now();
@@ -180,7 +196,10 @@ fn main() -> gpdb::Result<()> {
     let start = Instant::now();
     for i in 0..num_overwrites {
         let target = (i * 1103515245 + 12345) % num_writes;
-        db.put(format!("key-{:010}", target), format!("updated-val-{:022}", target))?;
+        db.put(
+            format!("key-{:010}", target),
+            format!("updated-val-{:022}", target),
+        )?;
     }
     reporter.record(Metrics {
         name: "Random Overwrites".to_string(),
@@ -206,11 +225,18 @@ fn main() -> gpdb::Result<()> {
         handles.push(thread::spawn(move || {
             for i in 0..writes_per_thread {
                 let mut db_lock = db_clone.lock().unwrap();
-                db_lock.put(format!("t{}-key-{:010}", t, i), format!("thread-val-{:020}", i)).unwrap();
+                db_lock
+                    .put(
+                        format!("t{}-key-{:010}", t, i),
+                        format!("thread-val-{:020}", i),
+                    )
+                    .unwrap();
             }
         }));
     }
-    for h in handles { h.join().unwrap(); }
+    for h in handles {
+        h.join().unwrap();
+    }
     reporter.record(Metrics {
         name: "Multi-Threaded Ingest".to_string(),
         total_ops: threads_count * writes_per_thread,
@@ -245,7 +271,10 @@ fn main() -> gpdb::Result<()> {
         thread::sleep(Duration::from_millis(500));
     }
     let final_ssts = count_sstables(path);
-    println!("[System] Compaction reduced SSTables from {} to {}", initial_ssts, final_ssts);
+    println!(
+        "[System] Compaction reduced SSTables from {} to {}",
+        initial_ssts, final_ssts
+    );
 
     reporter.record(Metrics {
         name: "Compaction Wait".to_string(),
@@ -260,14 +289,20 @@ fn main() -> gpdb::Result<()> {
     reporter.record(clean_metrics)?;
 
     // Final analysis
-    let total_ingested_bytes = (num_writes + num_overwrites + (threads_count * writes_per_thread)) as u64 * (key_size + val_size);
+    let total_ingested_bytes = (num_writes + num_overwrites + (threads_count * writes_per_thread))
+        as u64
+        * (key_size + val_size);
     reporter.finalize(path, total_ingested_bytes)?;
 
     Ok(())
 }
 
-fn run_read_phase(db: &DB<String, String>, name: &str, num_reads: usize, range: usize) -> gpdb::Result<(Metrics, usize)>
-{
+fn run_read_phase(
+    db: &DB<String, String>,
+    name: &str,
+    num_reads: usize,
+    range: usize,
+) -> gpdb::Result<(Metrics, usize)> {
     let mut hits = 0;
     let start = Instant::now();
     for i in 0..num_reads {
@@ -288,14 +323,16 @@ fn run_read_phase(db: &DB<String, String>, name: &str, num_reads: usize, range: 
 }
 
 fn count_sstables(path: &Path) -> usize {
-    std::fs::read_dir(path).unwrap()
+    std::fs::read_dir(path)
+        .unwrap()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().map_or(false, |ext| ext == "sst"))
         .count()
 }
 
 fn count_disk_usage(path: &Path) -> u64 {
-    std::fs::read_dir(path).unwrap()
+    std::fs::read_dir(path)
+        .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.metadata().unwrap().len())
         .sum()

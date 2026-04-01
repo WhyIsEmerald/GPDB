@@ -55,6 +55,14 @@ where
         Ok(())
     }
 
+    /// Appends multiple entries to the WAL in a single buffered operation.
+    pub fn append_batch(&mut self, entries: &[LogEntry<K, V>]) -> Result<()> {
+        for entry in entries {
+            write_record(&mut self.writer, entry)?;
+        }
+        Ok(())
+    }
+
     pub fn clear(&mut self) -> Result<()> {
         let file = OpenOptions::new()
             .write(true)

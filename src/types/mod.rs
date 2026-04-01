@@ -6,3 +6,6 @@ pub use result::*;
 
 pub mod sstable;
 pub use sstable::*;
+
+pub mod batch;
+pub use batch::*;

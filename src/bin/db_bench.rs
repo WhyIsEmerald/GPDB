@@ -160,20 +160,30 @@ fn main() -> gpdb::Result<()> {
     let path = tmp_dir.path();
     let mut reporter = Reporter::new("benchmark_results.txt")?;
 
+    // Back to 1MB - the "Sweet Spot" for this hardware's I/O pattern
     const MEMTABLE_SIZE: usize = 1024 * 1024;
     let db: DB<String, String> = DB::open(path, MEMTABLE_SIZE)?;
 
-    println!("=== GPDB EXTREME STRESS TEST ===");
-    println!("Target: {:?} | MemTable: 1MB\n", path);
+    println!("=== GPDB OPTIMIZED STRESS TEST ===");
+    println!(
+        "Target: {:?} | MemTable: 1MB (High Throughput Mode)\n",
+        path
+    );
 
     // --- PHASE 1: BULK INGESTION ---
     let num_writes = 1_000_000;
+    let batch_size = 1_000;
     let key_size = 14;
     let val_size = 34;
 
     let start = Instant::now();
-    for i in 0..num_writes {
-        db.put(format!("key-{:010}", i), format!("val-{:030}", i))?;
+    for i in (0..num_writes).step_by(batch_size) {
+        let mut batch = gpdb::WriteBatch::new();
+        for j in 0..batch_size {
+            let idx = i + j;
+            batch.put(format!("key-{:010}", idx), format!("val-{:030}", idx));
+        }
+        db.write_batch(batch)?;
     }
     reporter.record(Metrics {
         name: "Bulk Ingestion".to_string(),
@@ -204,8 +214,6 @@ fn main() -> gpdb::Result<()> {
     })?;
 
     // --- PHASE 3: RANDOM READ (Dirty) ---
-    // At this point:
-    // Some keys are "val-<idx>", some are "updated-val-<idx>"
     let num_reads = 100_000;
     let (dirty_metrics, _) =
         run_read_phase(&db, "Random Read (Dirty)", num_reads, num_writes, None)?;

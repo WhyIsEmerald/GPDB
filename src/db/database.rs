@@ -140,6 +140,12 @@ where
         inner.delete(key)
     }
 
+    /// Writes a batch of operations atomically.
+    pub fn write_batch(&self, batch: crate::WriteBatch<K, V>) -> Result<()> {
+        let mut inner = self.inner.write();
+        inner.write_batch(batch)
+    }
+
     /// Retrieves a value for a given key from the database.
     ///
     /// # Arguments

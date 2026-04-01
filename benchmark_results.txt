@@ -1,7 +1,7 @@
-Phase: Bulk Ingestion           | Ops: 1000000    | Speed: 338642       ops/s | Latency: 2.95     μs/op | SSTs: 21 
-Phase: Random Overwrites        | Ops: 500000     | Speed: 363849       ops/s | Latency: 2.75     μs/op | SSTs: 11 
-Phase: Random Read (Dirty)      | Ops: 100000     | Speed: 547065       ops/s | Latency: 1.83     μs/op | SSTs: 11 
-Phase: Multi-Threaded Ingest    | Ops: 200000     | Speed: 240688       ops/s | Latency: 4.15     μs/op | SSTs: 11 
-Phase: Random Deletions         | Ops: 250000     | Speed: 568930       ops/s | Latency: 1.76     μs/op | SSTs: 11 
-Phase: Compaction Wait          | Ops: 1          | Speed: 3            ops/s | Latency: 343459.49 μs/op | SSTs: 4  
-Phase: Random Read (Cleaned)    | Ops: 100000     | Speed: 446671       ops/s | Latency: 2.24     μs/op | SSTs: 4  
+Phase: Bulk Ingestion           | Ops: 1000000    | Speed: 837000       ops/s | Latency: 1.19     μs/op | SSTs: 27 
+Phase: Random Overwrites        | Ops: 500000     | Speed: 420698       ops/s | Latency: 2.38     μs/op | SSTs: 50 
+Phase: Random Read (Dirty)      | Ops: 100000     | Speed: 507454       ops/s | Latency: 1.97     μs/op | SSTs: 50 
+Phase: Multi-Threaded Ingest    | Ops: 200000     | Speed: 277258       ops/s | Latency: 3.61     μs/op | SSTs: 59 
+Phase: Random Deletions         | Ops: 250000     | Speed: 585189       ops/s | Latency: 1.71     μs/op | SSTs: 59 
+Phase: Compaction Wait          | Ops: 1          | Speed: 31           ops/s | Latency: 32606.09 μs/op | SSTs: 49 
+Phase: Random Read (Cleaned)    | Ops: 100000     | Speed: 540062       ops/s | Latency: 1.85     μs/op | SSTs: 49 

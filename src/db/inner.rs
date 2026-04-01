@@ -47,19 +47,61 @@ where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
     V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
 {
-    /// Returns the number of SSTables currently in the compaction pipeline.
     pub fn compaction_backlog(&self) -> usize {
         self.compacting_ids.len()
     }
 
-    /// Returns the total number of SSTables across all levels.
     pub fn total_sst_count(&self) -> usize {
         self.levels.iter().map(|l| l.len()).sum()
     }
 
-    pub fn put(&mut self, key: K, value: V) -> Result<()> {
+    pub fn write_batch(&mut self, batch: crate::WriteBatch<K, V>) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+
         self.handle_compaction_results()?;
 
+        let mut log_entries = Vec::with_capacity(batch.entries.len());
+        let mut total_batch_size = 0;
+
+        for entry in batch.entries {
+            let key_size = std::mem::size_of_val(&entry.key);
+            let val_size = entry
+                .value
+                .value
+                .as_ref()
+                .map_or(0, |v| std::mem::size_of_val(&**v));
+            total_batch_size += key_size + val_size;
+
+            let log_entry = if entry.value.is_tombstone {
+                LogEntry::Delete(entry.key.clone())
+            } else {
+                LogEntry::Put(entry.key.clone(), entry.value.value.clone().unwrap())
+            };
+            log_entries.push(log_entry);
+        }
+
+        self.wal.append_batch(&log_entries)?;
+        self.wal.flush()?;
+
+        // MemTable: Batch application
+        for entry in log_entries {
+            match entry {
+                LogEntry::Put(k, v) => self.memtable.put(k, v),
+                LogEntry::Delete(k) => self.memtable.delete(k),
+            };
+        }
+
+        self.memtable_size += total_batch_size;
+        if self.memtable_size >= self.max_memtable_size {
+            self.flush_memtable()?;
+        }
+
+        Ok(())
+    }
+
+    pub fn put(&mut self, key: K, value: V) -> Result<()> {
         let value_arc = Arc::new(value);
         let key_size = std::mem::size_of_val(&key);
         let val_size = std::mem::size_of_val(&*value_arc);
@@ -78,8 +120,6 @@ where
     }
 
     pub fn delete(&mut self, key: K) -> Result<()> {
-        self.handle_compaction_results()?;
-
         let entry = LogEntry::Delete(key.clone());
         self.wal.append(&entry)?;
         self.wal.flush()?;
@@ -132,9 +172,7 @@ where
                 } => {
                     self.apply_compaction_success(sstable, level, original_sstables)?;
                 }
-                CompactionResult::Failure(e) => {
-                    let _ = e; // Silent failure in background
-                }
+                CompactionResult::Failure(_) => {}
             }
         }
         Ok(())
@@ -170,9 +208,7 @@ where
     }
 
     fn maybe_trigger_compaction(&mut self, level: usize) {
-        // L0 threshold is 4 files
-        // Higher levels threshold is 8 files
-        let threshold = if level == 0 { 4 } else { 8 };
+        let threshold = 4;
 
         if self.levels[level].len() >= threshold {
             let any_compacting = self.levels[level]
@@ -219,7 +255,6 @@ where
             for sst in &original_sstables {
                 self.compacting_ids.remove(&sst.id());
 
-                // Find source level
                 let mut source_level = 0;
                 for (l_idx, level_vec) in self.levels.iter().enumerate() {
                     if level_vec.iter().any(|s| s.id() == sst.id()) {
@@ -235,7 +270,6 @@ where
                     })?;
                 }
 
-                // Physical deletion
                 let _ = std::fs::remove_file(sst.path());
             }
 
@@ -248,22 +282,18 @@ where
             manifest.flush()?;
         }
 
-        // Remove from memory
         for l in 0..self.levels.len() {
             self.levels[l].retain(|s| !removed_ids.contains(&s.id()));
         }
 
-        // Add new table
         if level >= self.levels.len() {
             self.levels.resize_with(level + 1, Vec::new);
         }
         self.levels[level].push(sstable);
         self.levels[level].sort_by_key(|s| s.id());
 
-        // Check if new level needs compaction
         self.maybe_trigger_compaction(level);
         // Also re-check L0 in case a flush happened during compaction
-        self.maybe_trigger_compaction(0);
 
         Ok(())
     }

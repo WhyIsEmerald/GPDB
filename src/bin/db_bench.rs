@@ -3,20 +3,20 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
-/// Standardized metrics for a single benchmark phase.
+/// Standardized metrics for a benchmark phase.
 #[derive(Debug, Clone)]
 struct Metrics {
     name: String,
     total_ops: usize,
     duration: Duration,
-    total_bytes: u64,
     hits: Option<usize>,
+    sst_count: usize,
+    accuracy: f64,
 }
 
 impl Metrics {
@@ -26,10 +26,6 @@ impl Metrics {
 
     fn latency_us(&self) -> f64 {
         (self.duration.as_secs_f64() * 1_000_000.0) / self.total_ops as f64
-    }
-
-    fn throughput_mbs(&self) -> f64 {
-        (self.total_bytes as f64 / 1024.0 / 1024.0) / self.duration.as_secs_f64()
     }
 
     fn hit_rate(&self) -> Option<f64> {
@@ -84,24 +80,26 @@ impl Reporter {
         let speed = metrics.ops_per_sec();
 
         let mut msg = format!(
-            "Phase: {}{}| Ops: {:<10} | Speed: {:<12.0} ops/s | Latency: {:<8.2} μs/op | Throughput: {:<8.2} MB/s",
+            "Phase: {}{}| Ops: {:<10} | Speed: {:<12.0} ops/s | Latency: {:<8.2} μs/op | SSTs: {:<3}",
             metrics.name,
             name_padding,
             metrics.total_ops,
             speed,
             metrics.latency_us(),
-            metrics.throughput_mbs()
+            metrics.sst_count
         );
 
         if let Some(hr) = metrics.hit_rate() {
-            msg.push_str(&format!(" | Hit Rate: {:.1}%", hr));
+            msg.push_str(&format!(" | Hit: {:.1}%", hr));
         }
+
+        msg.push_str(&format!(" | Accuracy: {:.1}%", metrics.accuracy));
 
         if let Some(prev_speed) = self.history.get(&metrics.name) {
             if *prev_speed > 0.0 {
                 let diff = (speed - prev_speed) / prev_speed * 100.0;
                 let color_code = if diff >= 0.0 { "\x1b[32m" } else { "\x1b[31m" };
-                msg.push_str(&format!(" | {}{:+>6.1}%\x1b[0m vs prev", color_code, diff));
+                msg.push_str(&format!(" | {}{:6.1}% Speed\x1b[0m", color_code, diff));
             }
         }
 
@@ -117,13 +115,13 @@ impl Reporter {
         for m in &self.results {
             let name_padding = " ".repeat(25usize.saturating_sub(m.name.len()));
             let msg = format!(
-                "Phase: {}{}| Ops: {:<10} | Speed: {:<12.0} ops/s | Latency: {:<8.2} μs/op | Throughput: {:<8.2} MB/s",
+                "Phase: {}{}| Ops: {:<10} | Speed: {:<12.0} ops/s | Latency: {:<8.2} μs/op | SSTs: {:<3}",
                 m.name,
                 name_padding,
                 m.total_ops,
                 m.ops_per_sec(),
                 m.latency_us(),
-                m.throughput_mbs()
+                m.sst_count
             );
             writeln!(f, "{}", msg)?;
         }
@@ -138,24 +136,20 @@ impl Reporter {
         ) {
             let improvement =
                 (before.latency_us() - after.latency_us()) / before.latency_us() * 100.0;
-            let msg = format!(
+            println!(
                 ">> Read Latency Improvement (via Compaction): {:.2}%",
                 improvement
             );
-            println!("{}", msg);
-            writeln!(f, "{}", msg)?;
         }
 
         let on_disk = count_disk_usage(db_path);
         let amp = on_disk as f64 / raw_bytes as f64;
-        let msg = format!(
+        println!(
             ">> Space Amplification Factor: {:.2}x (Raw: {:.2}MB, Disk: {:.2}MB)",
             amp,
             raw_bytes as f64 / 1024.0 / 1024.0,
             on_disk as f64 / 1024.0 / 1024.0
         );
-        println!("{}", msg);
-        writeln!(f, "{}", msg)?;
 
         Ok(())
     }
@@ -166,9 +160,8 @@ fn main() -> gpdb::Result<()> {
     let path = tmp_dir.path();
     let mut reporter = Reporter::new("benchmark_results.txt")?;
 
-    // Config: 1MB MemTable
     const MEMTABLE_SIZE: usize = 1024 * 1024;
-    let mut db: DB<String, String> = DB::open(path, MEMTABLE_SIZE)?;
+    let db: DB<String, String> = DB::open(path, MEMTABLE_SIZE)?;
 
     println!("=== GPDB EXTREME STRESS TEST ===");
     println!("Target: {:?} | MemTable: 1MB\n", path);
@@ -177,7 +170,6 @@ fn main() -> gpdb::Result<()> {
     let num_writes = 1_000_000;
     let key_size = 14;
     let val_size = 34;
-    let total_bytes = num_writes as u64 * (key_size + val_size);
 
     let start = Instant::now();
     for i in 0..num_writes {
@@ -187,8 +179,9 @@ fn main() -> gpdb::Result<()> {
         name: "Bulk Ingestion".to_string(),
         total_ops: num_writes,
         duration: start.elapsed(),
-        total_bytes,
         hits: None,
+        sst_count: db.total_sst_count(),
+        accuracy: 100.0,
     })?;
 
     // --- PHASE 2: RANDOM OVERWRITES ---
@@ -205,27 +198,29 @@ fn main() -> gpdb::Result<()> {
         name: "Random Overwrites".to_string(),
         total_ops: num_overwrites,
         duration: start.elapsed(),
-        total_bytes: num_overwrites as u64 * (key_size + val_size),
         hits: None,
+        sst_count: db.total_sst_count(),
+        accuracy: 100.0,
     })?;
 
     // --- PHASE 3: RANDOM READ (Dirty) ---
+    // At this point:
+    // Some keys are "val-<idx>", some are "updated-val-<idx>"
     let num_reads = 100_000;
-    let (dirty_metrics, _) = run_read_phase(&db, "Random Read (Dirty)", num_reads, num_writes)?;
+    let (dirty_metrics, _) =
+        run_read_phase(&db, "Random Read (Dirty)", num_reads, num_writes, None)?;
     reporter.record(dirty_metrics)?;
 
     // --- PHASE 4: MULTI-THREADED CONTENTION ---
     let threads_count = 4;
     let writes_per_thread = 50_000;
-    let db_shared = Arc::new(Mutex::new(db));
     let start = Instant::now();
     let mut handles = vec![];
     for t in 0..threads_count {
-        let db_clone = Arc::clone(&db_shared);
+        let db_clone = db.clone();
         handles.push(thread::spawn(move || {
             for i in 0..writes_per_thread {
-                let mut db_lock = db_clone.lock().unwrap();
-                db_lock
+                db_clone
                     .put(
                         format!("t{}-key-{:010}", t, i),
                         format!("thread-val-{:020}", i),
@@ -241,12 +236,10 @@ fn main() -> gpdb::Result<()> {
         name: "Multi-Threaded Ingest".to_string(),
         total_ops: threads_count * writes_per_thread,
         duration: start.elapsed(),
-        total_bytes: (threads_count * writes_per_thread) as u64 * (key_size + val_size),
         hits: None,
+        sst_count: db.total_sst_count(),
+        accuracy: 100.0,
     })?;
-
-    // Recover DB
-    let mut db = Arc::try_unwrap(db_shared).unwrap().into_inner().unwrap();
 
     // --- PHASE 5: DELETIONS ---
     let num_deletes = 250_000;
@@ -258,19 +251,29 @@ fn main() -> gpdb::Result<()> {
         name: "Random Deletions".to_string(),
         total_ops: num_deletes,
         duration: start.elapsed(),
-        total_bytes: num_deletes as u64 * key_size,
         hits: None,
+        sst_count: db.total_sst_count(),
+        accuracy: 100.0,
     })?;
 
     // --- PHASE 6: COMPACTION CATCH-UP ---
     println!("\n[System] Waiting for compaction to catch up...");
     let start = Instant::now();
-    let initial_ssts = count_sstables(path);
-    for _ in 0..10 {
+    let initial_ssts = db.total_sst_count();
+
+    loop {
         db.handle_compaction_results()?;
-        thread::sleep(Duration::from_millis(500));
+        if db.compaction_backlog() == 0 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+        if start.elapsed() > Duration::from_secs(60) {
+            println!("[System] Warning: Compaction timeout!");
+            break;
+        }
     }
-    let final_ssts = count_sstables(path);
+
+    let final_ssts = db.total_sst_count();
     println!(
         "[System] Compaction reduced SSTables from {} to {}",
         initial_ssts, final_ssts
@@ -280,15 +283,21 @@ fn main() -> gpdb::Result<()> {
         name: "Compaction Wait".to_string(),
         total_ops: 1,
         duration: start.elapsed(),
-        total_bytes: 0,
         hits: None,
+        sst_count: final_ssts,
+        accuracy: 100.0,
     })?;
 
     // --- PHASE 7: RANDOM READ (Cleaned) ---
-    let (clean_metrics, _) = run_read_phase(&db, "Random Read (Cleaned)", num_reads, num_writes)?;
+    let (clean_metrics, _) = run_read_phase(
+        &db,
+        "Random Read (Cleaned)",
+        num_reads,
+        num_writes,
+        Some(num_deletes),
+    )?;
     reporter.record(clean_metrics)?;
 
-    // Final analysis
     let total_ingested_bytes = (num_writes + num_overwrites + (threads_count * writes_per_thread))
         as u64
         * (key_size + val_size);
@@ -302,32 +311,41 @@ fn run_read_phase(
     name: &str,
     num_reads: usize,
     range: usize,
+    delete_range: Option<usize>,
 ) -> gpdb::Result<(Metrics, usize)> {
     let mut hits = 0;
+    let mut correct = 0;
     let start = Instant::now();
     for i in 0..num_reads {
         let target = (i * 1103515245 + 12345) % range;
         let key = format!("key-{:010}", target);
-        if db.get(&key)?.is_some() {
-            hits += 1;
+        let val = db.get(&key)?;
+
+        match delete_range {
+            Some(dr) if target < dr => {
+                if val.is_none() {
+                    correct += 1;
+                }
+            }
+            _ => {
+                if let Some(_) = val {
+                    hits += 1;
+                    correct += 1;
+                }
+            }
         }
     }
+
+    let accuracy = (correct as f64 / num_reads as f64) * 100.0;
     let metrics = Metrics {
         name: name.to_string(),
         total_ops: num_reads,
         duration: start.elapsed(),
-        total_bytes: num_reads as u64 * 14,
         hits: Some(hits),
+        sst_count: db.total_sst_count(),
+        accuracy,
     };
     Ok((metrics, hits))
-}
-
-fn count_sstables(path: &Path) -> usize {
-    std::fs::read_dir(path)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "sst"))
-        .count()
 }
 
 fn count_disk_usage(path: &Path) -> u64 {

@@ -83,7 +83,7 @@ pub fn persistence_bench(c: &mut Criterion) {
 pub fn db_orchestration_bench(c: &mut Criterion) {
     let tmp_dir = TempDir::new().unwrap();
     // Use huge MemTable limit to measure pure orchestration speed (avoiding flushes)
-    let mut db: DB<String, String> = DB::open(tmp_dir.path(), 100 * 1024 * 1024).unwrap();
+    let db: DB<String, String> = DB::open(tmp_dir.path(), 100 * 1024 * 1024).unwrap();
 
     c.bench_function("db_put_orchestration", |b| {
         b.iter(|| {

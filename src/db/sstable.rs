@@ -164,6 +164,11 @@ where
     /// # Arguments
     /// * `key` - The key to search for.
     pub fn get(&self, key: &K) -> Result<Option<ValueEntry<V>>> {
+        // Range Check: Optimization to skip files that definitely don't have the key
+        if key < self.min_key() || key > self.max_key() {
+            return Ok(None);
+        }
+
         let offset = match self.index.get(key) {
             Some(offset) => *offset,
             None => return Ok(None),

@@ -4,7 +4,7 @@ use tempfile::TempDir;
 #[test]
 fn test_db_basic_ops() {
     let tmp_dir = TempDir::new().unwrap();
-    let mut db: DB<String, String> = DB::open(tmp_dir.path(), 1024).expect("Failed to open DB");
+    let db: DB<String, String> = DB::open(tmp_dir.path(), 1024).expect("Failed to open DB");
 
     // Put & Get
     db.put("k1".to_string(), "v1".to_string()).unwrap();
@@ -28,7 +28,7 @@ fn test_db_persistence_and_recovery() {
     let path = tmp_dir.path();
 
     {
-        let mut db: DB<String, String> = DB::open(path, 1024).unwrap();
+        let db: DB<String, String> = DB::open(path, 1024).unwrap();
         db.put("k1".to_string(), "v1".to_string()).unwrap();
         db.put("k2".to_string(), "v2".to_string()).unwrap();
         db.delete("k3".to_string()).unwrap(); // Tombstone in WAL
@@ -58,7 +58,7 @@ fn test_db_persistence_and_recovery() {
 fn test_db_flush_and_read() {
     let tmp_dir = TempDir::new().unwrap();
     // Tiny max size to force flush
-    let mut db: DB<String, String> = DB::open(tmp_dir.path(), 10).unwrap();
+    let db: DB<String, String> = DB::open(tmp_dir.path(), 10).unwrap();
 
     db.put("very-long-key".to_string(), "value".to_string())
         .unwrap();
@@ -79,7 +79,7 @@ fn test_db_compaction_integration() {
     let path = tmp_dir.path();
 
     // Max size 50 bytes to force frequent flushes
-    let mut db: DB<String, String> = DB::open(path, 50).unwrap();
+    let db: DB<String, String> = DB::open(path, 50).unwrap();
 
     // Write enough to trigger multiple flushes
     for i in 0..10 {
@@ -126,7 +126,7 @@ fn test_db_manifest_complex_reconciliation() {
 
     // Create a situation with multiple levels and overlapping keys
     {
-        let mut db: DB<String, String> = DB::open(path, 20).unwrap();
+        let db: DB<String, String> = DB::open(path, 20).unwrap();
         // L0 files
         db.put("a".to_string(), "v0".to_string()).unwrap();
         db.put("b".to_string(), "v0".to_string()).unwrap();
@@ -156,7 +156,7 @@ fn test_db_level_n_compaction() {
     // L0 threshold is 4 files.
     // L1 threshold is 10MB, which is hard to hit in a unit test.
     // However, we can verify the logic by checking if it attempts to compact L1.
-    let mut db: DB<String, String> = DB::open(path, 50).unwrap();
+    let db: DB<String, String> = DB::open(path, 50).unwrap();
 
     // Fill L0 multiple times to ensure L1 gets multiple files
     for i in 0..20 {

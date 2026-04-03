@@ -1,5 +1,7 @@
 use crate::db::compaction::{CompactionResult, CompactionTask};
-use crate::{DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId, Wal};
+use crate::{
+    DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId, Wal, WriteBatch,
+};
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -36,7 +38,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DBInner")
             .field("path", &self.path)
-            .field("levels", &self.levels)
+            .field("levels_count", &self.levels.len())
             .field("next_id", &self.next_id)
             .finish()
     }
@@ -47,15 +49,32 @@ where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
     V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
 {
+    /// Returns the number of SSTables currently in the compaction pipeline.
     pub fn compaction_backlog(&self) -> usize {
         self.compacting_ids.len()
     }
 
+    /// Returns the total number of SSTables across all levels.
     pub fn total_sst_count(&self) -> usize {
         self.levels.iter().map(|l| l.len()).sum()
     }
 
-    pub fn write_batch(&mut self, batch: crate::WriteBatch<K, V>) -> Result<()> {
+    /// Public API for Puts - delegated to write_batch for consistency.
+    pub fn put(&mut self, key: K, value: V) -> Result<()> {
+        let mut batch = WriteBatch::new();
+        batch.put(key, value);
+        self.write_batch(batch)
+    }
+
+    /// Public API for Deletes - delegated to write_batch for consistency.
+    pub fn delete(&mut self, key: K) -> Result<()> {
+        let mut batch = WriteBatch::new();
+        batch.delete(key);
+        self.write_batch(batch)
+    }
+
+    /// Unified write path for all operations.
+    pub fn write_batch(&mut self, batch: WriteBatch<K, V>) -> Result<()> {
         if batch.is_empty() {
             return Ok(());
         }
@@ -77,15 +96,19 @@ where
             let log_entry = if entry.value.is_tombstone {
                 LogEntry::Delete(entry.key.clone())
             } else {
-                LogEntry::Put(entry.key.clone(), entry.value.value.clone().unwrap())
+                LogEntry::Put(
+                    entry.key.clone(),
+                    entry.value.value.clone().expect("Value missing in put"),
+                )
             };
             log_entries.push(log_entry);
         }
 
+        // 1. WAL Sync
         self.wal.append_batch(&log_entries)?;
         self.wal.flush()?;
 
-        // MemTable: Batch application
+        // 2. MemTable Application
         for entry in log_entries {
             match entry {
                 LogEntry::Put(k, v) => self.memtable.put(k, v),
@@ -93,38 +116,8 @@ where
             };
         }
 
+        // 3. Global state check
         self.memtable_size += total_batch_size;
-        if self.memtable_size >= self.max_memtable_size {
-            self.flush_memtable()?;
-        }
-
-        Ok(())
-    }
-
-    pub fn put(&mut self, key: K, value: V) -> Result<()> {
-        let value_arc = Arc::new(value);
-        let key_size = std::mem::size_of_val(&key);
-        let val_size = std::mem::size_of_val(&*value_arc);
-
-        let entry = LogEntry::Put(key.clone(), Arc::clone(&value_arc));
-        self.wal.append(&entry)?;
-        self.wal.flush()?;
-        self.memtable.put(key, value_arc);
-        self.memtable_size += key_size + val_size;
-
-        if self.memtable_size >= self.max_memtable_size {
-            self.flush_memtable()?;
-        }
-
-        Ok(())
-    }
-
-    pub fn delete(&mut self, key: K) -> Result<()> {
-        let entry = LogEntry::Delete(key.clone());
-        self.wal.append(&entry)?;
-        self.wal.flush()?;
-        self.memtable.delete(key);
-
         if self.memtable_size >= self.max_memtable_size {
             self.flush_memtable()?;
         }
@@ -150,7 +143,6 @@ where
                 }
             }
         }
-
         Ok(None)
     }
 
@@ -172,10 +164,53 @@ where
                 } => {
                     self.apply_compaction_success(sstable, level, original_sstables)?;
                 }
-                CompactionResult::Failure(_) => {}
+                CompactionResult::Failure(e) => {
+                    eprintln!("Compaction worker failed: {}", e);
+                }
             }
         }
+
+        self.check_all_compactions();
         Ok(())
+    }
+
+    /// Scans all levels and triggers any needed compaction tasks.
+    fn check_all_compactions(&mut self) {
+        for level in 0..self.levels.len() {
+            self.maybe_trigger_compaction(level);
+        }
+    }
+
+    fn maybe_trigger_compaction(&mut self, level: usize) {
+        let threshold = 4;
+        if self.levels[level].len() < threshold {
+            return;
+        }
+
+        let any_compacting = self.levels[level]
+            .iter()
+            .any(|s| self.compacting_ids.contains(&s.id()));
+        if !any_compacting {
+            let sstables = self.levels[level].clone();
+            self.trigger_compaction(sstables, level + 1);
+        }
+    }
+
+    fn trigger_compaction(&mut self, sstables: Vec<SSTable<K, V>>, target_level: usize) {
+        for sst in &sstables {
+            self.compacting_ids.insert(sst.id());
+        }
+
+        let id = self.next_id;
+        self.next_id = SSTableId(id.0 + 1);
+        let output_path = self.path.join(format!("L{}-{}.sst", target_level, id));
+
+        let _ = self.compaction_tx.send(CompactionTask::Compact {
+            sstables,
+            output_path,
+            next_id: id,
+            target_level,
+        });
     }
 
     fn flush_memtable(&mut self) -> Result<()> {
@@ -203,43 +238,8 @@ where
         self.memtable_size = 0;
         self.wal.clear()?;
 
-        self.maybe_trigger_compaction(0);
+        self.check_all_compactions();
         Ok(())
-    }
-
-    fn maybe_trigger_compaction(&mut self, level: usize) {
-        let threshold = 4;
-
-        if self.levels[level].len() >= threshold {
-            let any_compacting = self.levels[level]
-                .iter()
-                .any(|s| self.compacting_ids.contains(&s.id()));
-            if !any_compacting {
-                let sstables = self.levels[level].clone();
-                self.trigger_compaction(sstables, level + 1);
-            }
-        }
-    }
-
-    fn trigger_compaction(&mut self, sstables: Vec<SSTable<K, V>>, target_level: usize) {
-        for sst in &sstables {
-            self.compacting_ids.insert(sst.id());
-        }
-
-        let id = self.next_id;
-        self.next_id = SSTableId(id.0 + 1);
-
-        let filename = format!("L{}-{}.sst", target_level, id);
-        let output_path = self.path.join(&filename);
-
-        let task = CompactionTask::Compact {
-            sstables,
-            output_path,
-            next_id: id,
-            target_level,
-        };
-
-        self.compaction_tx.send(task).ok();
     }
 
     fn apply_compaction_success(
@@ -269,7 +269,6 @@ where
                         path: PathBuf::from(file_name),
                     })?;
                 }
-
                 let _ = std::fs::remove_file(sst.path());
             }
 
@@ -291,9 +290,6 @@ where
         }
         self.levels[level].push(sstable);
         self.levels[level].sort_by_key(|s| s.id());
-
-        self.maybe_trigger_compaction(level);
-        // Also re-check L0 in case a flush happened during compaction
 
         Ok(())
     }

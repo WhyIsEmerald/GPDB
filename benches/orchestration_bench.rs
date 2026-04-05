@@ -1,0 +1,48 @@
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use gpdb::DB;
+use tempfile::TempDir;
+use std::thread;
+use std::sync::Arc;
+
+pub fn orchestration_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("orchestration");
+    group.sample_size(1000);
+
+    let tmp_dir = TempDir::new().unwrap();
+    // Huge MemTable to measure pure code overhead, not I/O
+    let db: DB<String, String> = DB::open(tmp_dir.path(), 100 * 1024 * 1024).unwrap();
+
+    group.bench_function("put_single_threaded", |b| {
+        b.iter(|| {
+            db.put(black_box("key".to_string()), black_box("val".to_string()))
+                .unwrap();
+        })
+    });
+
+    group.bench_function("get_memtable_hit", |b| {
+        db.put("key-target".to_string(), "val".to_string()).unwrap();
+        b.iter(|| {
+            db.get(black_box(&"key-target".to_string())).unwrap();
+        })
+    });
+
+    group.bench_function("put_multi_threaded_contention_4_threads", |b| {
+        b.iter(|| {
+            let mut handles = vec![];
+            for _ in 0..4 {
+                let db_clone = db.clone();
+                handles.push(thread::spawn(move || {
+                    for i in 0..10 {
+                        db_clone.put(format!("key-{}", i), "val".to_string()).unwrap();
+                    }
+                }));
+            }
+            for h in handles { h.join().unwrap(); }
+        })
+    });
+
+    group.finish();
+}
+
+criterion_group!(benches, orchestration_bench);
+criterion_main!(benches);

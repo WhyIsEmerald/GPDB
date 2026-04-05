@@ -15,5 +15,17 @@ parking_lot = "0.12"
 criterion = "0.5"
 
 [[bench]]
-name = "db_benchmarks"
+name = "memtable_bench"
+harness = false
+
+[[bench]]
+name = "wal_bench"
+harness = false
+
+[[bench]]
+name = "sstable_bench"
+harness = false
+
+[[bench]]
+name = "orchestration_bench"
 harness = false

@@ -1,3 +1,4 @@
+use crate::db::datablock::{BLOCK_SIZE, BlockBuilder, DataBlock};
 use crate::db::io::{read_record, write_record};
 use crate::{DBKey, Entry, Error, MemTable, Result, SSTableId, TableMeta, ValueEntry};
 use serde::{Serialize, de::DeserializeOwned};
@@ -8,15 +9,19 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// The fixed size of the footer (32 bytes)
-///
-/// Contains (index_offset: u64, meta_offset: u64, id: u64, magic_number: u64)
-const FOOTER_SIZE: u64 = 8 + 8 + 8 + 8;
-/// Unique identifier for sstable files
+/// Current version of the SSTable format.
+const FORMAT_VERSION: u32 = 1;
+/// No compression for now.
+const COMPRESSION_NONE: u8 = 0;
+
+/// The fixed size of the footer (48 bytes)
+/// Contains (index_off: 8, meta_off: 8, id: 8, magic: 8, version: 4, compression: 1, padding: 11)
+/// All 8-byte values are aligned to 8-byte boundaries.
+const FOOTER_SIZE: u64 = 48;
 const MAGIC_NUMBER: u64 = 0xDEADC0DEBEEFCAFF;
 
 /// A Sorted String Table (SSTable) is an immutable, on-disk map from keys to values.
-/// It uses an index for fast lookups and metadata for range-based overlap checks.
+/// It uses a Sparse Index for fast lookups and metadata for range-based overlap checks.
 #[derive(Debug)]
 pub struct SSTable<K, V>
 where
@@ -27,9 +32,11 @@ where
     // Arc allows multiple handles to the same underlying file and reader
     // Mutex allows interior mutability so we can seek/read while having a &self reference
     reader: Arc<Mutex<BufReader<File>>>,
+    /// Sparse Index: Maps the FIRST key of a block to its disk offset.
     index: BTreeMap<K, u64>,
     meta: TableMeta<K>,
     id: SSTableId,
+    version: u32,
     index_offset: u64,
     file_size: u64,
     _phantom: PhantomData<(K, V)>,
@@ -47,6 +54,7 @@ where
             index: self.index.clone(),
             meta: self.meta.clone(),
             id: self.id,
+            version: self.version,
             index_offset: self.index_offset,
             file_size: self.file_size,
             _phantom: PhantomData,
@@ -60,9 +68,6 @@ where
     V: Serialize + DeserializeOwned,
 {
     /// Opens an existing SSTable file from disk and loads its index and metadata into memory.
-    ///
-    /// # Arguments
-    /// * `path` - The filesystem path to the .sst file.
     pub fn open(path: &Path) -> Result<Self> {
         let file = OpenOptions::new().read(true).open(path)?;
         let mut reader = BufReader::new(file);
@@ -72,29 +77,50 @@ where
                 "SSTable is too small to contain a valid footer".to_string(),
             ));
         }
+        
+        // Seek to the start of the aligned footer
         reader.seek(SeekFrom::End(-(FOOTER_SIZE as i64)))?;
-        let mut buf: [u8; 8] = [0u8; 8];
+        
+        let mut buf_8 = [0u8; 8];
+        let mut buf_4 = [0u8; 4];
+        let mut buf_1 = [0u8; 1];
 
-        reader.read_exact(&mut buf)?;
-        let index_offset = u64::from_le_bytes(buf);
-        reader.read_exact(&mut buf)?;
-        let meta_offset = u64::from_le_bytes(buf);
-        reader.read_exact(&mut buf)?;
-        let id = SSTableId(u64::from_le_bytes(buf));
-        reader.read_exact(&mut buf)?;
-        let magic_number = u64::from_le_bytes(buf);
+        // 1. Read Aligned 8-byte Offsets
+        reader.read_exact(&mut buf_8)?;
+        let index_offset = u64::from_le_bytes(buf_8);
+        
+        reader.read_exact(&mut buf_8)?;
+        let meta_offset = u64::from_le_bytes(buf_8);
+        
+        // 2. Read Aligned 8-byte ID and Magic
+        reader.read_exact(&mut buf_8)?;
+        let id = SSTableId(u64::from_le_bytes(buf_8));
 
+        reader.read_exact(&mut buf_8)?;
+        let magic_number = u64::from_le_bytes(buf_8);
+
+        // 3. Read Version and Compression
+        reader.read_exact(&mut buf_4)?;
+        let version = u32::from_le_bytes(buf_4);
+        
+        reader.read_exact(&mut buf_1)?;
+        let _compression = buf_1[0];
+
+        // Verification
         if magic_number != MAGIC_NUMBER {
             return Err(Error::Corruption("Invalid magic number".to_string()));
         }
+        if version > FORMAT_VERSION {
+            return Err(Error::Corruption(format!("Unsupported SSTable version: {}", version)));
+        }
 
-        // Seek to the index block and read it
+        // Load Sparse Index
         reader.seek(SeekFrom::Start(index_offset))?;
         let index: BTreeMap<K, u64> = read_record(&mut reader)?.ok_or_else(|| {
             Error::Corruption("SSTable index block is missing or empty".to_string())
         })?;
 
-        // Seek to the meta block and read it
+        // Load Metadata
         reader.seek(SeekFrom::Start(meta_offset))?;
         let meta: TableMeta<K> = read_record(&mut reader)?.ok_or_else(|| {
             Error::Corruption("SSTable meta block is missing or empty".to_string())
@@ -106,91 +132,61 @@ where
             index,
             meta,
             id,
+            version,
             index_offset,
             file_size: file_len,
             _phantom: PhantomData,
         })
     }
 
-    /// Returns the path of this SSTable file.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Returns the ID of this SSTable.
-    pub fn id(&self) -> SSTableId {
-        self.id
-    }
-
-    /// Returns the number of entries in this SSTable (from the in-memory index).
-    pub fn len(&self) -> usize {
-        self.index.len()
-    }
-
-    /// Returns the file size in bytes.
-    pub fn file_size(&self) -> u64 {
-        self.file_size
-    }
-
-    /// Returns the minimum key in this SSTable.
-    pub fn min_key(&self) -> &K {
-        &self.meta.min_key
-    }
-
-    /// Returns the maximum key in this SSTable.
-    pub fn max_key(&self) -> &K {
-        &self.meta.max_key
-    }
-
-    /// Returns the total number of entries from metadata.
-    pub fn num_entries(&self) -> u64 {
-        self.meta.num_entries
-    }
-
-    /// Checks if this SSTable's key range overlaps with another SSTable.
-    pub fn overlaps(&self, other: &Self) -> bool {
-        self.overlaps_range(other.min_key(), other.max_key())
-    }
-
-    /// Checks if this SSTable's key range overlaps with the given range.
-    pub fn overlaps_range(&self, min: &K, max: &K) -> bool {
-        // [self.min, self.max] and [min, max] overlap if:
-        // self.min <= max AND min <= self.max
-        self.min_key() <= max && min <= self.max_key()
-    }
-
-    /// Retrieves a ValueEntry for a given key from SSTable file on disk.
-    ///
-    /// # Arguments
-    /// * `key` - The key to search for.
+    /// Retrieves a value by finding the correct block and binary searching its restart points.
     pub fn get(&self, key: &K) -> Result<Option<ValueEntry<V>>> {
-        // Range Check: Optimization to skip files that definitely don't have the key
+        // 1. Coarse Range Check
         if key < self.min_key() || key > self.max_key() {
             return Ok(None);
         }
 
-        let offset = match self.index.get(key) {
-            Some(offset) => *offset,
+        // 2. Sparse Index Binary Search
+        let block_offset = match self.index.range(..=key.clone()).next_back() {
+            Some((_, offset)) => *offset,
             None => return Ok(None),
         };
 
-        // Lock the reader and seek to the entry offset
+        // 3. Load exactly ONE 4KB block from disk
         let mut reader = self
             .reader
             .lock()
             .map_err(|_| Error::Corruption("Lock poisoned".to_string()))?;
-        reader.seek(SeekFrom::Start(offset))?;
+        reader.seek(SeekFrom::Start(block_offset))?;
 
-        let entry: Option<Entry<K, V>> = read_record(&mut *reader)?;
-        Ok(entry.map(|e| e.value))
+        let block: DataBlock<K, V> = read_record(&mut *reader)?
+            .ok_or_else(|| Error::Corruption("Data block is missing or corrupted".to_string()))?;
+
+        // 4. Inner-Block Binary Search using Restart Points
+        let restart_idx = block
+            .restart_points
+            .partition_point(|&idx| &block.entries[idx as usize].key <= key);
+
+        let start_search_idx = if restart_idx > 0 {
+            block.restart_points[restart_idx - 1] as usize
+        } else {
+            0
+        };
+
+        // 5. Linear scan from the restart point (at most RESTART_INTERVAL entries)
+        for entry in &block.entries[start_search_idx..] {
+            if &entry.key == key {
+                return Ok(Some(entry.value.clone()));
+            }
+            if &entry.key > key {
+                break;
+            }
+        }
+
+        Ok(None)
     }
 
-    /// Writes a stream of sorted entries to a new SSTable file.
-    ///
-    /// # Arguments
-    /// * `path` - The path where the new file will be created.
-    /// * `iter` - An iterator over sorted Entry objects.
-    /// * `id` - The unique identifier for this table.
+    /// Writes a stream of sorted entries to a new SSTable file in Blocked format.
     pub fn write_from_iter<I>(path: &Path, iter: I, id: SSTableId) -> Result<Self>
     where
         K: DBKey,
@@ -199,13 +195,15 @@ where
     {
         let file = OpenOptions::new().write(true).create_new(true).open(path)?;
         let mut writer = BufWriter::new(file);
-        let mut index = BTreeMap::new();
+        let mut sparse_index = BTreeMap::new();
 
         let mut min_key = None;
         let mut max_key = None;
         let mut num_entries = 0;
 
         let mut current_offset = 0;
+        let mut builder = BlockBuilder::new(BLOCK_SIZE);
+
         for item in iter {
             let entry = item?;
             if min_key.is_none() {
@@ -214,8 +212,30 @@ where
             max_key = Some(entry.key.clone());
             num_entries += 1;
 
-            let bytes_written = write_record(&mut writer, &entry)?;
-            index.insert(entry.key.clone(), current_offset);
+            if builder.is_empty() {
+                sparse_index.insert(entry.key.clone(), current_offset);
+            }
+
+            builder.add(entry);
+
+            if builder.is_full() {
+                let (entries, restart_points) = builder.finish();
+                let block = DataBlock {
+                    entries,
+                    restart_points,
+                };
+                let bytes_written = write_record(&mut writer, &block)?;
+                current_offset += bytes_written;
+            }
+        }
+
+        if !builder.is_empty() {
+            let (entries, restart_points) = builder.finish();
+            let block = DataBlock {
+                entries,
+                restart_points,
+            };
+            let bytes_written = write_record(&mut writer, &block)?;
             current_offset += bytes_written;
         }
 
@@ -225,7 +245,7 @@ where
 
         // Write the index block
         let index_offset = current_offset;
-        let index_size = write_record(&mut writer, &index)?;
+        let index_size = write_record(&mut writer, &sparse_index)?;
 
         // Write the meta block
         let meta_offset = index_offset + index_size;
@@ -234,25 +254,22 @@ where
             max_key,
             num_entries,
         };
-        write_record(&mut writer, &meta)?;
+        let _meta_size = write_record(&mut writer, &meta)?;
 
-        // Write the footer
-        writer.write_all(&index_offset.to_le_bytes())?;
-        writer.write_all(&meta_offset.to_le_bytes())?;
-        writer.write_all(&id.0.to_le_bytes())?;
-        writer.write_all(&MAGIC_NUMBER.to_le_bytes())?;
+        // Write the 48-byte Aligned Footer
+        writer.write_all(&index_offset.to_le_bytes())?;    // 8
+        writer.write_all(&meta_offset.to_le_bytes())?;     // 8
+        writer.write_all(&id.0.to_le_bytes())?;            // 8
+        writer.write_all(&MAGIC_NUMBER.to_le_bytes())?;    // 8
+        writer.write_all(&FORMAT_VERSION.to_le_bytes())?;  // 4
+        writer.write_all(&[COMPRESSION_NONE])?;            // 1
+        writer.write_all(&[0u8; 11])?;                     // 11 (Padding to 48 bytes)
+        
         writer.flush()?;
 
         Self::open(path)
     }
 
-    /// Writes a new SSTable from the contents of a MemTable.
-    /// Returns the opened SSTable instance.
-    ///
-    /// # Arguments
-    /// * `path` - The path where the new file will be created.
-    /// * `memtable` - The in-memory data to persist.
-    /// * `id` - The unique identifier for this table.
     pub fn write_from_memtable(
         path: &Path,
         memtable: &MemTable<K, V>,
@@ -267,12 +284,30 @@ where
         Self::write_from_iter(path, iter, id)
     }
 
+    pub fn path(&self) -> &Path { &self.path }
+    pub fn id(&self) -> SSTableId { self.id }
+    pub fn len(&self) -> usize { self.meta.num_entries as usize }
+    pub fn file_size(&self) -> u64 { self.file_size }
+    pub fn min_key(&self) -> &K { &self.meta.min_key }
+    pub fn max_key(&self) -> &K { &self.meta.max_key }
+    pub fn num_entries(&self) -> u64 { self.meta.num_entries }
+
+    pub fn overlaps(&self, other: &Self) -> bool {
+        self.overlaps_range(other.min_key(), other.max_key())
+    }
+
+    pub fn overlaps_range(&self, min: &K, max: &K) -> bool {
+        self.min_key() <= max && min <= self.max_key()
+    }
+
     /// Returns a sequential iterator over all entries in this SSTable.
     pub fn iter(&self) -> Result<SSTableIterator<K, V>> {
         let file = File::open(&self.path)?;
         Ok(SSTableIterator {
             reader: BufReader::new(file),
-            end_offset: self.index_offset,
+            index_offset: self.index_offset,
+            current_block: None,
+            current_idx: 0,
             _phantom: PhantomData,
         })
     }
@@ -280,7 +315,9 @@ where
 
 pub struct SSTableIterator<K, V> {
     reader: BufReader<File>,
-    end_offset: u64,
+    index_offset: u64,
+    current_block: Option<DataBlock<K, V>>,
+    current_idx: usize,
     _phantom: PhantomData<(K, V)>,
 }
 
@@ -292,13 +329,29 @@ where
     type Item = Result<Entry<K, V>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Stop if we've reached the start of the index block
-        let current_pos = self.reader.stream_position().ok()?;
-        if current_pos >= self.end_offset {
-            return None;
-        }
+        loop {
+            if let Some(block) = &self.current_block {
+                if self.current_idx < block.entries.len() {
+                    let entry = block.entries[self.current_idx].clone();
+                    self.current_idx += 1;
+                    return Some(Ok(entry));
+                }
+            }
 
-        read_record(&mut self.reader).transpose()
+            let current_pos = self.reader.stream_position().ok()?;
+            if current_pos >= self.index_offset {
+                return None;
+            }
+
+            match read_record(&mut self.reader) {
+                Ok(Some(block)) => {
+                    self.current_block = Some(block);
+                    self.current_idx = 0;
+                }
+                Ok(None) => return None,
+                Err(e) => return Some(Err(e)),
+            }
+        }
     }
 }
 
@@ -329,10 +382,10 @@ mod tests {
 
         let sstable: SSTable<String, String> =
             SSTable::open(&sstable_path).expect("Failed to open SSTable");
-        assert_eq!(sstable.len(), 2);
+        assert_eq!(sstable.num_entries(), 2);
         assert_eq!(sstable.id(), SSTableId(1));
         assert!(sstable.index.contains_key("key1"));
-        assert!(sstable.index.contains_key("key2"));
+        assert!(!sstable.index.contains_key("key2"));
     }
 
     #[test]
@@ -394,5 +447,26 @@ mod tests {
         assert!(e3.value.is_tombstone);
 
         assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_sparse_index_and_blocks() {
+        let (_tmp_dir, sstable_path) = setup();
+        let mut memtable: MemTable<String, String> = MemTable::new();
+        
+        for i in 0..1000 {
+            memtable.put(format!("key-{:05}", i), Arc::new(format!("val-{}", i)));
+        }
+        
+        let sst = SSTable::write_from_memtable(&sstable_path, &memtable, SSTableId(1)).unwrap();
+        
+        assert!(sst.index.len() < 100);
+        assert!(sst.index.len() > 1);
+
+        let val = sst.get(&"key-00500".to_string()).unwrap().unwrap();
+        assert_eq!(val.value.unwrap().as_ref(), &"val-500".to_string());
+
+        let count = sst.iter().unwrap().count();
+        assert_eq!(count, 1000);
     }
 }

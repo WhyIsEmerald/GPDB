@@ -5,16 +5,25 @@ use std::hash::Hash;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+pub trait DBKey: Eq + Hash + Ord + Clone + Serialize + DeserializeOwned + std::fmt::Debug {}
+impl<T> DBKey for T where T: Eq + Hash + Ord + Clone + Serialize + DeserializeOwned + std::fmt::Debug
+{}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 /// A full key-value pair as stored in an SSTable data block or returned by iterators.
 pub struct Entry<K, V> {
     pub key: K,
     pub value: ValueEntry<V>,
 }
 
-pub trait DBKey: Eq + Hash + Ord + Clone + Serialize + DeserializeOwned {}
-
-impl<T> DBKey for T where T: Eq + Hash + Ord + Clone + Serialize + DeserializeOwned {}
+impl<K: Clone, V> Clone for Entry<K, V> {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            value: self.value.clone(),
+        }
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub enum LogEntry<K, V> {
@@ -38,8 +47,8 @@ pub struct ValueEntry<V> {
 
 impl<V> Clone for ValueEntry<V> {
     fn clone(&self) -> Self {
-        ValueEntry {
-            value: self.value.clone(),
+        Self {
+            value: self.value.clone(), // This clones the Arc, not the data
             is_tombstone: self.is_tombstone,
         }
     }

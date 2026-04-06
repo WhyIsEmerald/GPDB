@@ -1,8 +1,7 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use gpdb::DB;
-use tempfile::TempDir;
 use std::thread;
-use std::sync::Arc;
+use tempfile::TempDir;
 
 pub fn orchestration_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("orchestration");
@@ -33,11 +32,15 @@ pub fn orchestration_bench(c: &mut Criterion) {
                 let db_clone = db.clone();
                 handles.push(thread::spawn(move || {
                     for i in 0..10 {
-                        db_clone.put(format!("key-{}", i), "val".to_string()).unwrap();
+                        db_clone
+                            .put(format!("key-{}", i), "val".to_string())
+                            .unwrap();
                     }
                 }));
             }
-            for h in handles { h.join().unwrap(); }
+            for h in handles {
+                h.join().unwrap();
+            }
         })
     });
 

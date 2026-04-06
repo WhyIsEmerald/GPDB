@@ -29,3 +29,7 @@ harness = false
 [[bench]]
 name = "orchestration_bench"
 harness = false
+
+[[bin]]
+name = "space_bench"
+path = "src/bin/space_bench.rs"

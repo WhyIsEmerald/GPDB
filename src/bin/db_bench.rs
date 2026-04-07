@@ -160,7 +160,6 @@ fn main() -> gpdb::Result<()> {
     let path = tmp_dir.path();
     let mut reporter = Reporter::new("benchmark_results.txt")?;
 
-    // Back to 1MB - the "Sweet Spot" for this hardware's I/O pattern
     const MEMTABLE_SIZE: usize = 1024 * 1024;
     let db: DB<String, String> = DB::open(path, MEMTABLE_SIZE)?;
 

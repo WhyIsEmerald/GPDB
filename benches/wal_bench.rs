@@ -5,13 +5,12 @@ use tempfile::TempDir;
 
 pub fn wal_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("wal");
-    group.sample_size(200); // Disk I/O is slow, 200 is sufficient
+    group.sample_size(200);
 
     let tmp_dir = TempDir::new().unwrap();
     let wal_path = tmp_dir.path().join("wal.log");
     let mut wal: Wal<String, String> = Wal::create(&wal_path).unwrap();
 
-    // Benchmark different payload sizes
     for size in [100, 1024, 10240].iter() {
         let val = "a".repeat(*size);
         let entry = LogEntry::Put("key".to_string(), Arc::new(val));

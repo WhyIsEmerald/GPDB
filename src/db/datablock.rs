@@ -33,11 +33,7 @@ impl<T: Serialize> BlockBuilder<T> {
     }
 
     pub fn add(&mut self, item: T) {
-        // Every RESTART_INTERVAL entries, we mark a "Restart Point"
         if self.items.len() % RESTART_INTERVAL == 0 {
-            // We use the index in the vector as the "offset" for now since we
-            // are storing full Entry objects.
-            // (In a raw-byte implementation, this would be a byte offset).
             self.restart_points.push(self.items.len() as u32);
         }
 

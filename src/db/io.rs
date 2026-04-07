@@ -24,7 +24,6 @@ pub fn write_record<W: Write, T: Serialize>(writer: &mut W, data: &T) -> Result<
 /// Reads a data-frame from the reader.
 /// Returns Ok(None) on clean EOF at the start of a record.
 pub fn read_record<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<Option<T>> {
-    // 1. Read Checksum
     let mut checksum_bytes = [0u8; 4];
     if let Err(e) = reader.read_exact(&mut checksum_bytes) {
         if e.kind() == std::io::ErrorKind::UnexpectedEof {
@@ -34,7 +33,6 @@ pub fn read_record<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<Optio
     }
     let expected_checksum = u32::from_le_bytes(checksum_bytes);
 
-    // 2. Read Length
     let mut len_bytes = [0u8; 8];
     reader.read_exact(&mut len_bytes).map_err(|e| {
         if e.kind() == std::io::ErrorKind::UnexpectedEof {
@@ -45,7 +43,6 @@ pub fn read_record<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<Optio
     })?;
     let len = u64::from_le_bytes(len_bytes) as usize;
 
-    // 3. Read Data
     let mut data_bytes = vec![0; len];
     reader.read_exact(&mut data_bytes).map_err(|e| {
         if e.kind() == std::io::ErrorKind::UnexpectedEof {
@@ -55,14 +52,12 @@ pub fn read_record<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<Optio
         }
     })?;
 
-    // 4. Verify Checksum
     let mut hasher = Hasher::new();
     hasher.update(&data_bytes);
     if hasher.finalize() != expected_checksum {
         return Err(Error::Corruption("Record checksum mismatch".to_string()));
     }
 
-    // 5. Deserialize
     let data: T =
         bincode::deserialize(&data_bytes).map_err(|e| Error::Serialization(e.to_string()))?;
 
@@ -91,11 +86,9 @@ mod tests {
             tags: vec!["LSM".to_string(), "Rust".to_string()],
         };
 
-        // Write
         let bytes_written = write_record(&mut buffer, &original).expect("Write failed");
         assert!(bytes_written > 0);
 
-        // Read
         let mut cursor = Cursor::new(buffer);
         let recovered: TestStruct = read_record(&mut cursor)
             .expect("Read failed")
@@ -123,7 +116,6 @@ mod tests {
         };
         write_record(&mut buffer, &data).unwrap();
 
-        // Corrupt the data (last byte)
         let last_idx = buffer.len() - 1;
         buffer[last_idx] ^= 0xFF;
 
@@ -146,7 +138,6 @@ mod tests {
         };
         write_record(&mut buffer, &data).unwrap();
 
-        // Truncate the buffer to simulate a crash mid-write
         buffer.truncate(buffer.len() - 5);
 
         let mut cursor = Cursor::new(buffer);

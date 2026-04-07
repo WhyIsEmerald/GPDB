@@ -11,9 +11,7 @@ pub struct MemTable<K, V>
 where
     K: DBKey,
 {
-    // For fast, sorted iteration when flushing to SSTable
     b_tree_map: BTreeMap<K, ValueEntry<V>>,
-    // For fast O(1) key lookups
     hash_map: HashMap<K, ValueEntry<V>>,
 }
 
@@ -78,7 +76,6 @@ where
 
     /// Returns an iterator over the sorted key-value entries in the MemTable.
     pub fn iter(&self) -> std::collections::btree_map::Iter<'_, K, ValueEntry<V>> {
-        // deleted values are still iterable since this functionality is required for the sstable
         self.b_tree_map.iter()
     }
 }
@@ -136,7 +133,7 @@ mod tests {
         memtable.delete(key.clone());
         assert_eq!(memtable.len(), 0);
         assert!(memtable.get(&key).is_none());
-        assert_eq!(memtable.hash_map.len(), 1) // value still exists as tomstone
+        assert_eq!(memtable.hash_map.len(), 1)
     }
 
     #[test]
@@ -203,7 +200,6 @@ mod tests {
 
         let mut iter = memtable.iter();
 
-        // deleted values are still iterable since this functionality is required for the sstable
         let (k, entry) = iter.next().expect("Iterator should have at least 2 item");
         assert_eq!(k, &key1);
         assert!(entry.is_tombstone);

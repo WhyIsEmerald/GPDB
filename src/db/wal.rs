@@ -161,7 +161,7 @@ mod tests {
             wal.append(&entry3).expect("Failed to write log entry");
 
             wal.flush().expect("Failed to flush WAL");
-        } // the wal is closed here
+        }
 
         let wal: Wal<String, String> =
             Wal::open(&wal_path).expect("Failed to create Wal for writing");
@@ -234,7 +234,7 @@ mod tests {
         file.seek(std::io::SeekFrom::Start(0))
             .expect("Failed to seek to start of WAL file");
         file.write_all(&[0x00, 0x00, 0x00, 0x00])
-            .expect("Failed to corrupt checksum"); // Corrupt first 4 bytes
+            .expect("Failed to corrupt checksum");
 
         let wal: Wal<String, String> =
             Wal::open(&wal_path).expect("Failed to open WAL for reading");

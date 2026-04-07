@@ -11,7 +11,6 @@ use std::sync::mpsc;
 pub(crate) const MANIFEST_FILE_NAME: &str = "MANIFEST";
 pub(crate) const WAL_FILE_NAME: &str = "wal.log";
 
-/// The internal state of the database (The "Kitchen").
 pub struct DBInner<K, V>
 where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
@@ -59,21 +58,18 @@ where
         self.levels.iter().map(|l| l.len()).sum()
     }
 
-    /// Public API for Puts - delegated to write_batch for consistency.
     pub fn put(&mut self, key: K, value: V) -> Result<()> {
         let mut batch = WriteBatch::new();
         batch.put(key, value);
         self.write_batch(batch)
     }
 
-    /// Public API for Deletes - delegated to write_batch for consistency.
     pub fn delete(&mut self, key: K) -> Result<()> {
         let mut batch = WriteBatch::new();
         batch.delete(key);
         self.write_batch(batch)
     }
 
-    /// Unified write path for all operations.
     pub fn write_batch(&mut self, batch: WriteBatch<K, V>) -> Result<()> {
         if batch.is_empty() {
             return Ok(());
@@ -104,11 +100,9 @@ where
             log_entries.push(log_entry);
         }
 
-        // 1. WAL Sync
         self.wal.append_batch(&log_entries)?;
         self.wal.flush()?;
 
-        // 2. MemTable Application
         for entry in log_entries {
             match entry {
                 LogEntry::Put(k, v) => self.memtable.put(k, v),
@@ -116,7 +110,6 @@ where
             };
         }
 
-        // 3. Global state check
         self.memtable_size += total_batch_size;
         if self.memtable_size >= self.max_memtable_size {
             self.flush_memtable()?;

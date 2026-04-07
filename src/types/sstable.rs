@@ -6,7 +6,7 @@ pub struct SSTableId(pub u64);
 
 impl std::fmt::Display for SSTableId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Pad to 20 digits for lexicographical alignment in file systems
+        // Pad to 20 digits
         write!(f, "{:020}", self.0)
     }
 }

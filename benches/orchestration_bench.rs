@@ -8,7 +8,6 @@ pub fn orchestration_bench(c: &mut Criterion) {
     group.sample_size(1000);
 
     let tmp_dir = TempDir::new().unwrap();
-    // Huge MemTable to measure pure code overhead, not I/O
     let db: DB<String, String> = DB::open(tmp_dir.path(), 100 * 1024 * 1024).unwrap();
 
     group.bench_function("put_single_threaded", |b| {

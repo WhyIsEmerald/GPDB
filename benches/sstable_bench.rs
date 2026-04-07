@@ -5,7 +5,7 @@ use tempfile::TempDir;
 
 pub fn sstable_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("sstable");
-    group.sample_size(200); // 200 samples for disk-based reads
+    group.sample_size(200);
 
     let tmp_dir = TempDir::new().unwrap();
     let sstable_path = tmp_dir.path().join("bench.sst");

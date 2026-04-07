@@ -300,7 +300,6 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    // Helper to create a MergeElement for testing
     fn make_el(key: &str, id: u64, iter_idx: usize) -> MergeElement<String, String> {
         MergeElement {
             sstable_id: SSTableId(id),
@@ -319,12 +318,10 @@ mod tests {
     fn test_key_priority() {
         let mut heap = BinaryHeap::new();
 
-        // Push keys in "wrong" order
         heap.push(make_el("C", 1, 0));
         heap.push(make_el("A", 1, 0));
         heap.push(make_el("B", 1, 0));
 
-        // BinaryHeap should pop smallest key first because of our flipped Ord
         assert_eq!(heap.pop().unwrap().entry.key, "A");
         assert_eq!(heap.pop().unwrap().entry.key, "B");
         assert_eq!(heap.pop().unwrap().entry.key, "C");
@@ -334,12 +331,10 @@ mod tests {
     fn test_id_priority_on_tie() {
         let mut heap = BinaryHeap::new();
 
-        // Three versions of key "A" with different SSTable IDs
-        heap.push(make_el("A", 10, 0)); // Newest
-        heap.push(make_el("A", 2, 0)); // Oldest
-        heap.push(make_el("A", 5, 0)); // Middle
+        heap.push(make_el("A", 10, 0));
+        heap.push(make_el("A", 2, 0));
+        heap.push(make_el("A", 5, 0));
 
-        // For the same key, the HIGHEST ID must come out first
         let winner = heap.pop().unwrap();
         assert_eq!(winner.entry.key, "A");
         assert_eq!(winner.sstable_id, SSTableId(10));
@@ -357,15 +352,12 @@ mod tests {
         heap.push(make_el("B", 50, 0));
         heap.push(make_el("A", 50, 0));
 
-        // 1. Smallest Key ("A") wins. Between "A"s, highest ID (50) wins.
         let first = heap.pop().unwrap();
         assert_eq!(first.entry.key, "A");
         assert_eq!(first.sstable_id, SSTableId(50));
 
-        // 2. Remaining "A" (ID 1)
         assert_eq!(heap.pop().unwrap().sstable_id, SSTableId(1));
 
-        // 3. Next key ("B"). Highest ID (100) wins.
         assert_eq!(heap.pop().unwrap().sstable_id, SSTableId(100));
         assert_eq!(heap.pop().unwrap().sstable_id, SSTableId(50));
     }
@@ -374,7 +366,6 @@ mod tests {
     fn test_merge_stream_integration() {
         let tmp_dir = TempDir::new().unwrap();
 
-        // SST1 (Older): [A, C, E]
         let sst1_path = tmp_dir.path().join("L0-1.sst");
         let mut mem1 = MemTable::new();
         mem1.put("A".to_string(), Arc::new("v1-old".to_string()));
@@ -382,7 +373,6 @@ mod tests {
         mem1.put("E".to_string(), Arc::new("v1".to_string()));
         let sst1 = SSTable::write_from_memtable(&sst1_path, &mem1, SSTableId(1)).unwrap();
 
-        // SST2 (Newer): [A, B, D]
         let sst2_path = tmp_dir.path().join("L0-2.sst");
         let mut mem2 = MemTable::new();
         mem2.put("A".to_string(), Arc::new("v2-new".to_string()));
@@ -395,11 +385,9 @@ mod tests {
 
         let results: Vec<Entry<String, String>> = stream.map(|r| r.unwrap()).collect();
 
-        // Check deduplication (A should be v2-new)
         assert_eq!(results[0].key, "A");
         assert_eq!(results[0].value.value.as_ref().unwrap().as_str(), "v2-new");
 
-        // Check sorting and inclusion
         assert_eq!(results[1].key, "B");
         assert_eq!(results[2].key, "C");
         assert_eq!(results[3].key, "D");
@@ -411,28 +399,24 @@ mod tests {
     fn test_compactor_l0_to_disk() {
         let tmp_dir = TempDir::new().unwrap();
 
-        // Create L0-1 [A, C]
         let path1 = tmp_dir.path().join("L0-1.sst");
         let mut mem1 = MemTable::new();
         mem1.put("A".to_string(), Arc::new("old".to_string()));
         mem1.put("C".to_string(), Arc::new("val".to_string()));
         let sst1 = SSTable::write_from_memtable(&path1, &mem1, SSTableId(1)).unwrap();
 
-        // L0-2 [A, B]
         let path2 = tmp_dir.path().join("L0-2.sst");
         let mut mem2 = MemTable::new();
         mem2.put("A".to_string(), Arc::new("new".to_string()));
         mem2.put("B".to_string(), Arc::new("val".to_string()));
         let sst2 = SSTable::write_from_memtable(&path2, &mem2, SSTableId(2)).unwrap();
 
-        // Compact them into L1-5
         let l1_path = tmp_dir.path().join("L1-5.sst");
         let sst_l1 = Compactor::compact_l0(&[sst1, sst2], &l1_path, SSTableId(5))
             .expect("Compaction failed");
 
-        // Verify the new SSTable on disk
         assert_eq!(sst_l1.id(), SSTableId(5));
-        assert_eq!(sst_l1.len(), 3); // A, B, C
+        assert_eq!(sst_l1.len(), 3);
 
         let val_a = sst_l1.get(&"A".to_string()).unwrap().unwrap();
         assert_eq!(val_a.value.unwrap().as_str(), "new");

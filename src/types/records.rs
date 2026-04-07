@@ -48,7 +48,7 @@ pub struct ValueEntry<V> {
 impl<V> Clone for ValueEntry<V> {
     fn clone(&self) -> Self {
         Self {
-            value: self.value.clone(), // This clones the Arc, not the data
+            value: self.value.clone(),
             is_tombstone: self.is_tombstone,
         }
     }

@@ -9,9 +9,7 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// Current version of the SSTable format.
 const FORMAT_VERSION: u32 = 1;
-/// No compression for now.
 const COMPRESSION_NONE: u8 = 0;
 
 /// The fixed size of the footer (48 bytes)
@@ -29,10 +27,7 @@ where
     V: Serialize + DeserializeOwned,
 {
     path: PathBuf,
-    // Arc allows multiple handles to the same underlying file and reader
-    // Mutex allows interior mutability so we can seek/read while having a &self reference
     reader: Arc<Mutex<BufReader<File>>>,
-    /// Sparse Index: Maps the FIRST key of a block to its disk offset.
     index: BTreeMap<K, u64>,
     meta: TableMeta<K>,
     id: SSTableId,
@@ -78,35 +73,30 @@ where
             ));
         }
         
-        // Seek to the start of the aligned footer
         reader.seek(SeekFrom::End(-(FOOTER_SIZE as i64)))?;
         
         let mut buf_8 = [0u8; 8];
         let mut buf_4 = [0u8; 4];
         let mut buf_1 = [0u8; 1];
 
-        // 1. Read Aligned 8-byte Offsets
         reader.read_exact(&mut buf_8)?;
         let index_offset = u64::from_le_bytes(buf_8);
         
         reader.read_exact(&mut buf_8)?;
         let meta_offset = u64::from_le_bytes(buf_8);
         
-        // 2. Read Aligned 8-byte ID and Magic
         reader.read_exact(&mut buf_8)?;
         let id = SSTableId(u64::from_le_bytes(buf_8));
 
         reader.read_exact(&mut buf_8)?;
         let magic_number = u64::from_le_bytes(buf_8);
 
-        // 3. Read Version and Compression
         reader.read_exact(&mut buf_4)?;
         let version = u32::from_le_bytes(buf_4);
         
         reader.read_exact(&mut buf_1)?;
         let _compression = buf_1[0];
 
-        // Verification
         if magic_number != MAGIC_NUMBER {
             return Err(Error::Corruption("Invalid magic number".to_string()));
         }
@@ -114,13 +104,11 @@ where
             return Err(Error::Corruption(format!("Unsupported SSTable version: {}", version)));
         }
 
-        // Load Sparse Index
         reader.seek(SeekFrom::Start(index_offset))?;
         let index: BTreeMap<K, u64> = read_record(&mut reader)?.ok_or_else(|| {
             Error::Corruption("SSTable index block is missing or empty".to_string())
         })?;
 
-        // Load Metadata
         reader.seek(SeekFrom::Start(meta_offset))?;
         let meta: TableMeta<K> = read_record(&mut reader)?.ok_or_else(|| {
             Error::Corruption("SSTable meta block is missing or empty".to_string())
@@ -141,18 +129,15 @@ where
 
     /// Retrieves a value by finding the correct block and binary searching its restart points.
     pub fn get(&self, key: &K) -> Result<Option<ValueEntry<V>>> {
-        // 1. Coarse Range Check
         if key < self.min_key() || key > self.max_key() {
             return Ok(None);
         }
 
-        // 2. Sparse Index Binary Search
         let block_offset = match self.index.range(..=key.clone()).next_back() {
             Some((_, offset)) => *offset,
             None => return Ok(None),
         };
 
-        // 3. Load exactly ONE 4KB block from disk
         let mut reader = self
             .reader
             .lock()
@@ -162,7 +147,6 @@ where
         let block: DataBlock<K, V> = read_record(&mut *reader)?
             .ok_or_else(|| Error::Corruption("Data block is missing or corrupted".to_string()))?;
 
-        // 4. Inner-Block Binary Search using Restart Points
         let restart_idx = block
             .restart_points
             .partition_point(|&idx| &block.entries[idx as usize].key <= key);
@@ -173,7 +157,6 @@ where
             0
         };
 
-        // 5. Linear scan from the restart point (at most RESTART_INTERVAL entries)
         for entry in &block.entries[start_search_idx..] {
             if &entry.key == key {
                 return Ok(Some(entry.value.clone()));
@@ -243,11 +226,9 @@ where
             .ok_or_else(|| Error::Corruption("Cannot write an empty SSTable".to_string()))?;
         let max_key = max_key.unwrap();
 
-        // Write the index block
         let index_offset = current_offset;
         let index_size = write_record(&mut writer, &sparse_index)?;
 
-        // Write the meta block
         let meta_offset = index_offset + index_size;
         let meta = TableMeta {
             min_key,
@@ -256,14 +237,13 @@ where
         };
         let _meta_size = write_record(&mut writer, &meta)?;
 
-        // Write the 48-byte Aligned Footer
-        writer.write_all(&index_offset.to_le_bytes())?;    // 8
-        writer.write_all(&meta_offset.to_le_bytes())?;     // 8
-        writer.write_all(&id.0.to_le_bytes())?;            // 8
-        writer.write_all(&MAGIC_NUMBER.to_le_bytes())?;    // 8
-        writer.write_all(&FORMAT_VERSION.to_le_bytes())?;  // 4
-        writer.write_all(&[COMPRESSION_NONE])?;            // 1
-        writer.write_all(&[0u8; 11])?;                     // 11 (Padding to 48 bytes)
+        writer.write_all(&index_offset.to_le_bytes())?;
+        writer.write_all(&meta_offset.to_le_bytes())?;
+        writer.write_all(&id.0.to_le_bytes())?;
+        writer.write_all(&MAGIC_NUMBER.to_le_bytes())?;
+        writer.write_all(&FORMAT_VERSION.to_le_bytes())?;
+        writer.write_all(&[COMPRESSION_NONE])?;
+        writer.write_all(&[0u8; 11])?;
         
         writer.flush()?;
 

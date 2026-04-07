@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 pub fn memtable_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("memtable");
-    group.sample_size(1000); // 1000 samples for high consistency
+    group.sample_size(1000);
 
     let val = Arc::new("value-000000000000000000000000000000".to_string());
 

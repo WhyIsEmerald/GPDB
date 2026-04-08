@@ -172,7 +172,11 @@ fn main() -> gpdb::Result<()> {
         "Target: {:?} | MemTable: {}MB ({})\n",
         path,
         memtable_size / 1024 / 1024,
-        if is_ci { "CI Mode" } else { "High Throughput Mode" }
+        if is_ci {
+            "CI Mode"
+        } else {
+            "High Throughput Mode"
+        }
     );
 
     // --- PHASE 1: BULK INGESTION ---

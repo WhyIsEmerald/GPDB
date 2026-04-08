@@ -160,17 +160,22 @@ fn main() -> gpdb::Result<()> {
     let path = tmp_dir.path();
     let mut reporter = Reporter::new("benchmark_results.txt")?;
 
-    const MEMTABLE_SIZE: usize = 1024 * 1024;
-    let db: DB<String, String> = DB::open(path, MEMTABLE_SIZE)?;
+    // --- ENVIRONMENT TUNING ---
+    let is_ci = std::env::var("GITHUB_ACTIONS").is_ok();
+    let memtable_size = if is_ci { 4 * 1024 * 1024 } else { 1024 * 1024 };
+    let num_writes = if is_ci { 500_000 } else { 5_000_000 };
+
+    let db: DB<String, String> = DB::open(path, memtable_size)?;
 
     println!("=== GPDB OPTIMIZED STRESS TEST ===");
     println!(
-        "Target: {:?} | MemTable: 1MB (High Throughput Mode)\n",
-        path
+        "Target: {:?} | MemTable: {}MB ({})\n",
+        path,
+        memtable_size / 1024 / 1024,
+        if is_ci { "CI Mode" } else { "High Throughput Mode" }
     );
 
     // --- PHASE 1: BULK INGESTION ---
-    let num_writes = 1_000_000;
     let batch_size = 1_000;
     let key_size = 14;
     let val_size = 34;

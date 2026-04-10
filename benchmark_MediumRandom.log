@@ -1,0 +1,8 @@
+Phase                        |          Ops |  Speed (ops/s) |   Mean μs |    p50 μs |    p95 μs |    p99 μs |   SSTs | Accuracy(%) | ReadImp(%) |        Δμs
+Bulk Ingestion               |      200_000 |        422_079 |       2.4 |         - |         - |         - |      1 |      100.0 |          - |          -
+Random Overwrites            |       50_000 |        393_997 |       2.5 |         - |         - |         - |      1 |      100.0 |          - |          -
+Random Read (Dirty)          |       50_000 |        105_764 |       7.4 |       9.0 |      11.0 |      14.0 |      1 |      100.0 |      36.81 |       2.71
+Multi-Threaded Ingest        |      200_000 |        193_097 |       5.2 |         - |         - |         - |      2 |      100.0 |          - |          -
+Random Deletions             |       25_000 |        425_390 |       2.4 |         - |         - |         - |      2 |      100.0 |          - |          -
+Compaction Wait              |            1 |      1_022_495 |      0.98 |         - |         - |         - |      2 |      100.0 |          - |          -
+Random Read (Cleaned)        |       50_000 |        147_757 |       4.7 |       1.0 |      11.0 |      14.0 |      2 |      100.0 |      36.81 |       2.71

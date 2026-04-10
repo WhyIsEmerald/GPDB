@@ -29,22 +29,3 @@ jobs:
 
       - name: Run All Tests
         run: cargo test --verbose --all-targets
-
-  benchmarks:
-    name: Performance Analysis
-    runs-on: ubuntu-latest
-    needs: quality
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build
-        run: cargo build --release --bins --benches
-
-      - name: Storage Efficiency Analysis
-        run: cargo run --release --bin space_bench
-
-      - name: Throughput & Latency Analysis
-        run: cargo run --release --bin db_bench

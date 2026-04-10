@@ -1,325 +1,307 @@
+use colored::Colorize;
 use gpdb::DB;
-use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::Path;
-
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
-/// Standardized metrics for a benchmark phase.
+fn format_usize(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    let mut cnt = 0usize;
+    for c in s.chars().rev() {
+        if cnt == 3 {
+            out.push('_');
+            cnt = 0;
+        }
+        out.push(c);
+        cnt += 1;
+    }
+    out.chars().rev().collect()
+}
+
+fn format_f64_short(v: f64) -> String {
+    if v.is_nan() || v.is_infinite() {
+        return format!("{}", v);
+    }
+    if v.abs() < 1.0 {
+        format!("{:.2}", v)
+    } else if v < 1000.0 {
+        format!("{:.1}", v)
+    } else {
+        let rounded = v.round() as i128;
+        if rounded < 0 {
+            format!("-{}", format_usize((-rounded) as usize))
+        } else {
+            format_usize(rounded as usize)
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LatStats {
+    mean_us: f64,
+    p50_us: f64,
+    p95_us: f64,
+    p99_us: f64,
+}
+
+impl LatStats {
+    fn fmt_brief(&self) -> (String, String, String, String) {
+        (
+            format_f64_short(self.mean_us),
+            format_f64_short(self.p50_us),
+            format_f64_short(self.p95_us),
+            format_f64_short(self.p99_us),
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Metrics {
     name: String,
     total_ops: usize,
     duration: Duration,
-    hits: Option<usize>,
     sst_count: usize,
     accuracy: f64,
+    lat: Option<LatStats>,
 }
 
 impl Metrics {
     fn ops_per_sec(&self) -> f64 {
+        if self.duration.as_secs_f64() <= 0.0 {
+            return 0.0;
+        }
         self.total_ops as f64 / self.duration.as_secs_f64()
     }
 
-    fn latency_us(&self) -> f64 {
-        (self.duration.as_secs_f64() * 1_000_000.0) / self.total_ops as f64
-    }
-
-    fn hit_rate(&self) -> Option<f64> {
-        self.hits
-            .map(|h| (h as f64 / self.total_ops as f64) * 100.0)
+    fn mean_latency_us(&self) -> f64 {
+        if let Some(ref l) = self.lat {
+            l.mean_us
+        } else {
+            if self.total_ops == 0 {
+                0.0
+            } else {
+                (self.duration.as_secs_f64() * 1_000_000.0) / self.total_ops as f64
+            }
+        }
     }
 }
 
 struct Reporter {
     results: Vec<Metrics>,
-    history: HashMap<String, f64>,
     log_file_path: String,
 }
 
 impl Reporter {
     fn new(path: &str) -> gpdb::Result<Self> {
-        let mut history = HashMap::new();
-        if Path::new(path).exists() {
-            let file = File::open(path)?;
-            let reader = BufReader::new(file);
-            for line in reader.lines() {
-                let line = line?;
-                if line.starts_with("Phase: ") {
-                    let parts: Vec<&str> = line.split('|').collect();
-                    if parts.len() >= 3 {
-                        let name = parts[0].replace("Phase: ", "").trim().to_string();
-                        if let Some(speed_part) = parts[2].split(':').nth(1) {
-                            if let Ok(speed) = speed_part
-                                .trim()
-                                .split_whitespace()
-                                .next()
-                                .unwrap_or("0")
-                                .parse::<f64>()
-                            {
-                                history.insert(name, speed);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         Ok(Self {
             results: Vec::new(),
-            history,
             log_file_path: path.to_string(),
         })
     }
 
-    fn record(&mut self, metrics: Metrics) -> gpdb::Result<()> {
-        let name_padding = " ".repeat(25usize.saturating_sub(metrics.name.len()));
-        let speed = metrics.ops_per_sec();
-
-        let mut msg = format!(
-            "Phase: {}{}| Ops: {:<10} | Speed: {:<12.0} ops/s | Latency: {:<8.2} μs/op | SSTs: {:<3}",
-            metrics.name,
-            name_padding,
-            metrics.total_ops,
-            speed,
-            metrics.latency_us(),
-            metrics.sst_count
-        );
-
-        if let Some(hr) = metrics.hit_rate() {
-            msg.push_str(&format!(" | Hit: {:.1}%", hr));
-        }
-
-        msg.push_str(&format!(" | Accuracy: {:.1}%", metrics.accuracy));
-
-        if let Some(prev_speed) = self.history.get(&metrics.name) {
-            if *prev_speed > 0.0 {
-                let diff = (speed - prev_speed) / prev_speed * 100.0;
-                let color_code = if diff >= 0.0 { "\x1b[32m" } else { "\x1b[31m" };
-                msg.push_str(&format!(" | {}{:6.1}% Speed\x1b[0m", color_code, diff));
-            }
-        }
-
-        println!("{}", msg);
-        self.results.push(metrics);
+    fn record(&mut self, m: Metrics) -> gpdb::Result<()> {
+        self.results.push(m.clone());
+        println!("{}", format!("Recorded: {}", m.name).dimmed());
         Ok(())
     }
 
     fn finalize(&mut self, db_path: &Path, raw_bytes: u64) -> gpdb::Result<()> {
-        println!("\n=== IMPROVEMENT & EFFICIENCY ANALYSIS ===");
-        let mut f = File::create(&self.log_file_path)?;
+        let dirty = self
+            .results
+            .iter()
+            .find(|m| m.name == "Random Read (Dirty)")
+            .cloned();
+        let cleaned = self
+            .results
+            .iter()
+            .find(|m| m.name == "Random Read (Cleaned)")
+            .cloned();
 
-        for m in &self.results {
-            let name_padding = " ".repeat(25usize.saturating_sub(m.name.len()));
-            let msg = format!(
-                "Phase: {}{}| Ops: {:<10} | Speed: {:<12.0} ops/s | Latency: {:<8.2} μs/op | SSTs: {:<3}",
-                m.name,
-                name_padding,
-                m.total_ops,
-                m.ops_per_sec(),
-                m.latency_us(),
-                m.sst_count
-            );
-            writeln!(f, "{}", msg)?;
-        }
-
-        if let (Some(before), Some(after)) = (
-            self.results
-                .iter()
-                .find(|m| m.name == "Random Read (Dirty)"),
-            self.results
-                .iter()
-                .find(|m| m.name == "Random Read (Cleaned)"),
-        ) {
-            let improvement =
-                (before.latency_us() - after.latency_us()) / before.latency_us() * 100.0;
-            println!(
-                ">> Read Latency Improvement (via Compaction): {:.2}%",
-                improvement
-            );
-        }
+        let (read_imp_pct, read_imp_abs_us, has_read_imp) =
+            if let (Some(d), Some(c)) = (&dirty, &cleaned) {
+                let dirty_mean = d.mean_latency_us();
+                let clean_mean = c.mean_latency_us();
+                if dirty_mean > 0.0 {
+                    let pct = (dirty_mean - clean_mean) / dirty_mean * 100.0;
+                    let abs = dirty_mean - clean_mean;
+                    (pct, abs, true)
+                } else {
+                    (0.0, 0.0, false)
+                }
+            } else {
+                (0.0, 0.0, false)
+            };
 
         let on_disk = count_disk_usage(db_path);
-        let amp = on_disk as f64 / raw_bytes as f64;
+        let space_amp = if raw_bytes > 0 {
+            on_disk as f64 / raw_bytes as f64
+        } else {
+            0.0
+        };
+
+        let header = format!(
+            "{:<28} | {:>12} | {:>14} | {:>9} | {:>9} | {:>9} | {:>9} | {:>6} | {:>10} | {:>10} | {:>10}",
+            "Phase",
+            "Ops",
+            "Speed (ops/s)",
+            "Mean μs",
+            "p50 μs",
+            "p95 μs",
+            "p99 μs",
+            "SSTs",
+            "Accuracy(%)",
+            "ReadImp(%)",
+            "Δμs"
+        );
+
+        let mut f = File::create(&self.log_file_path)?;
+        writeln!(f, "{}", header)?;
+        println!("{}", header.bold());
+
+        for m in &self.results {
+            let phase = format!("{:<28}", m.name);
+            let ops = format!("{:>12}", format_usize(m.total_ops));
+            let speed = format!("{:>14}", format_f64_short(m.ops_per_sec()));
+
+            let (mean_s, p50_s, p95_s, p99_s) = if let Some(ref l) = m.lat {
+                let (a, b, c, d) = l.fmt_brief();
+                (
+                    format!("{:>9}", a),
+                    format!("{:>9}", b),
+                    format!("{:>9}", c),
+                    format!("{:>9}", d),
+                )
+            } else {
+                let mean = format_f64_short(m.mean_latency_us());
+                (
+                    format!("{:>9}", mean),
+                    format!("{:>9}", "-"),
+                    format!("{:>9}", "-"),
+                    format!("{:>9}", "-"),
+                )
+            };
+
+            let ssts = format!("{:>6}", format_usize(m.sst_count));
+            let acc = format!("{:>10.1}", m.accuracy);
+
+            let (ripct_s, abs_s) = if has_read_imp
+                && (m.name == "Random Read (Dirty)" || m.name == "Random Read (Cleaned)")
+            {
+                (
+                    format!("{:>10.2}", read_imp_pct),
+                    format!("{:>10.2}", read_imp_abs_us),
+                )
+            } else {
+                (format!("{:>10}", "-"), format!("{:>10}", "-"))
+            };
+
+            let line = format!(
+                "{:<28} | {:>12} | {:>14} | {:>9} | {:>9} | {:>9} | {:>9} | {:>6} | {:>10} | {:>10} | {:>10}",
+                phase, ops, speed, mean_s, p50_s, p95_s, p99_s, ssts, acc, ripct_s, abs_s
+            );
+
+            writeln!(f, "{}", line)?;
+            println!("{}", line);
+        }
+
         println!(
-            ">> Space Amplification Factor: {:.2}x (Raw: {:.2}MB, Disk: {:.2}MB)",
-            amp,
-            raw_bytes as f64 / 1024.0 / 1024.0,
-            on_disk as f64 / 1024.0 / 1024.0
+            "{} {} (Raw: {} MB, On-disk: {} MB)",
+            "Space Amplification:".bold(),
+            format!("{:.2}x", space_amp).bright_magenta(),
+            format_f64_short(raw_bytes as f64 / 1024.0 / 1024.0),
+            format_f64_short(on_disk as f64 / 1024.0 / 1024.0)
         );
 
         Ok(())
     }
 }
 
-fn main() -> gpdb::Result<()> {
-    let tmp_dir = TempDir::new().unwrap();
-    let path = tmp_dir.path();
-    let mut reporter = Reporter::new("benchmark_results.txt")?;
+#[derive(Clone)]
+struct BenchConfig {
+    name: String,
+    num_writes: usize,
+    num_overwrites: usize,
+    num_reads: usize,
+    num_deletes: usize,
+    memtable_size: usize,
+    key_size: usize,
+    val_size: usize,
+    batch_size: usize,
+    threads: usize,
+    pattern: KeyPattern,
+}
 
-    // --- ENVIRONMENT TUNING ---
-    let is_ci = std::env::var("GITHUB_ACTIONS").is_ok();
-    let memtable_size = if is_ci { 4 * 1024 * 1024 } else { 1024 * 1024 };
-    let num_writes = if is_ci { 500_000 } else { 5_000_000 };
+#[derive(Clone, Copy, Debug)]
+enum KeyPattern {
+    Sequential,
+    SimpleRandom,
+    Striped(usize),
+}
 
-    let db: DB<String, String> = DB::open(path, memtable_size)?;
-
-    println!("=== GPDB OPTIMIZED STRESS TEST ===");
-    println!(
-        "Target: {:?} | MemTable: {}MB ({})\n",
-        path,
-        memtable_size / 1024 / 1024,
-        if is_ci {
-            "CI Mode"
-        } else {
-            "High Throughput Mode"
+use std::fmt;
+impl fmt::Display for KeyPattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            KeyPattern::Sequential => write!(f, "Sequential"),
+            KeyPattern::SimpleRandom => write!(f, "SimpleRandom"),
+            KeyPattern::Striped(s) => write!(f, "Striped({})", s),
         }
-    );
-
-    // --- PHASE 1: BULK INGESTION ---
-    let batch_size = 1_000;
-    let key_size = 14;
-    let val_size = 34;
-
-    let start = Instant::now();
-    for i in (0..num_writes).step_by(batch_size) {
-        let mut batch = gpdb::WriteBatch::new();
-        for j in 0..batch_size {
-            let idx = i + j;
-            batch.put(format!("key-{:010}", idx), format!("val-{:030}", idx));
-        }
-        db.write_batch(batch)?;
     }
-    reporter.record(Metrics {
-        name: "Bulk Ingestion".to_string(),
-        total_ops: num_writes,
-        duration: start.elapsed(),
-        hits: None,
-        sst_count: db.total_sst_count(),
-        accuracy: 100.0,
-    })?;
+}
 
-    // --- PHASE 2: RANDOM OVERWRITES ---
-    let num_overwrites = 500_000;
-    let start = Instant::now();
-    for i in 0..num_overwrites {
-        let target = (i * 1103515245 + 12345) % num_writes;
-        db.put(
-            format!("key-{:010}", target),
-            format!("updated-val-{:022}", target),
-        )?;
-    }
-    reporter.record(Metrics {
-        name: "Random Overwrites".to_string(),
-        total_ops: num_overwrites,
-        duration: start.elapsed(),
-        hits: None,
-        sst_count: db.total_sst_count(),
-        accuracy: 100.0,
-    })?;
-
-    // --- PHASE 3: RANDOM READ (Dirty) ---
-    let num_reads = 100_000;
-    let (dirty_metrics, _) =
-        run_read_phase(&db, "Random Read (Dirty)", num_reads, num_writes, None)?;
-    reporter.record(dirty_metrics)?;
-
-    // --- PHASE 4: MULTI-THREADED CONTENTION ---
-    let threads_count = 4;
-    let writes_per_thread = 50_000;
-    let start = Instant::now();
-    let mut handles = vec![];
-    for t in 0..threads_count {
-        let db_clone = db.clone();
-        handles.push(thread::spawn(move || {
-            for i in 0..writes_per_thread {
-                db_clone
-                    .put(
-                        format!("t{}-key-{:010}", t, i),
-                        format!("thread-val-{:020}", i),
-                    )
-                    .unwrap();
+impl KeyPattern {
+    fn generate(&self, idx: usize, pad: usize) -> String {
+        match *self {
+            KeyPattern::Sequential => format!("key-{:0width$}", idx, width = pad),
+            KeyPattern::SimpleRandom => {
+                let r = lcg(idx);
+                format!("key-{:0width$}", r % 1_000_000_000usize, width = pad)
             }
-        }));
-    }
-    for h in handles {
-        h.join().unwrap();
-    }
-    reporter.record(Metrics {
-        name: "Multi-Threaded Ingest".to_string(),
-        total_ops: threads_count * writes_per_thread,
-        duration: start.elapsed(),
-        hits: None,
-        sst_count: db.total_sst_count(),
-        accuracy: 100.0,
-    })?;
-
-    // --- PHASE 5: DELETIONS ---
-    let num_deletes = 250_000;
-    let start = Instant::now();
-    for i in 0..num_deletes {
-        db.delete(format!("key-{:010}", i))?;
-    }
-    reporter.record(Metrics {
-        name: "Random Deletions".to_string(),
-        total_ops: num_deletes,
-        duration: start.elapsed(),
-        hits: None,
-        sst_count: db.total_sst_count(),
-        accuracy: 100.0,
-    })?;
-
-    // --- PHASE 6: COMPACTION CATCH-UP ---
-    println!("\n[System] Waiting for compaction to catch up...");
-    let start = Instant::now();
-    let initial_ssts = db.total_sst_count();
-
-    loop {
-        db.handle_compaction_results()?;
-        if db.compaction_backlog() == 0 {
-            break;
-        }
-        thread::sleep(Duration::from_millis(100));
-        if start.elapsed() > Duration::from_secs(60) {
-            println!("[System] Warning: Compaction timeout!");
-            break;
+            KeyPattern::Striped(stripes) => {
+                let stripe = idx % stripes;
+                format!("s{}-key-{:0width$}", stripe, idx / stripes, width = pad)
+            }
         }
     }
+}
 
-    let final_ssts = db.total_sst_count();
-    println!(
-        "[System] Compaction reduced SSTables from {} to {}",
-        initial_ssts, final_ssts
-    );
+fn lcg(seed: usize) -> usize {
+    let mut x = seed as u64;
+    x = x.wrapping_mul(6364136223846793005u64).wrapping_add(1);
+    x as usize
+}
 
-    reporter.record(Metrics {
-        name: "Compaction Wait".to_string(),
-        total_ops: 1,
-        duration: start.elapsed(),
-        hits: None,
-        sst_count: final_ssts,
-        accuracy: 100.0,
-    })?;
+fn count_disk_usage(path: &Path) -> u64 {
+    std::fs::read_dir(path)
+        .unwrap_or_else(|_| panic!("Failed to read dir {:?}", path))
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
+}
 
-    // --- PHASE 7: RANDOM READ (Cleaned) ---
-    let (clean_metrics, _) = run_read_phase(
-        &db,
-        "Random Read (Cleaned)",
-        num_reads,
-        num_writes,
-        Some(num_deletes),
-    )?;
-    reporter.record(clean_metrics)?;
-
-    let total_ingested_bytes = (num_writes + num_overwrites + (threads_count * writes_per_thread))
-        as u64
-        * (key_size + val_size);
-    reporter.finalize(path, total_ingested_bytes)?;
-
-    Ok(())
+fn percentile(mut samples: Vec<u128>, p: f64) -> f64 {
+    let n = samples.len();
+    if n == 0 {
+        return 0.0;
+    }
+    samples.sort_unstable();
+    let rank = (p / 100.0) * ((n - 1) as f64);
+    let idx_low = rank.floor() as usize;
+    let idx_high = rank.ceil() as usize;
+    if idx_low == idx_high {
+        samples[idx_low] as f64
+    } else {
+        let low = samples[idx_low] as f64;
+        let high = samples[idx_high] as f64;
+        let frac = rank - (idx_low as f64);
+        low + (high - low) * frac
+    }
 }
 
 fn run_read_phase(
@@ -327,47 +309,309 @@ fn run_read_phase(
     name: &str,
     num_reads: usize,
     range: usize,
-    delete_range: Option<usize>,
-) -> gpdb::Result<(Metrics, usize)> {
-    let mut hits = 0;
-    let mut correct = 0;
+    deleted_range: Option<usize>,
+    pattern: KeyPattern,
+    key_pad: usize,
+) -> gpdb::Result<Metrics> {
+    let mut correct = 0usize;
+    let mut samples: Vec<u128> = Vec::with_capacity(num_reads);
     let start = Instant::now();
-    for i in 0..num_reads {
-        let target = (i * 1103515245 + 12345) % range;
-        let key = format!("key-{:010}", target);
-        let val = db.get(&key)?;
 
-        match delete_range {
+    for i in 0..num_reads {
+        let target = lcg(i).wrapping_mul(1103515245).wrapping_add(12345) % range;
+        let key = pattern.generate(target, key_pad);
+
+        let t0 = Instant::now();
+        let val = db.get(&key)?;
+        let dt = t0.elapsed();
+        let us = dt.as_micros();
+        samples.push(us);
+
+        match deleted_range {
             Some(dr) if target < dr => {
                 if val.is_none() {
                     correct += 1;
                 }
             }
             _ => {
-                if let Some(_) = val {
-                    hits += 1;
+                if val.is_some() {
                     correct += 1;
                 }
             }
         }
     }
 
-    let accuracy = (correct as f64 / num_reads as f64) * 100.0;
+    let duration = start.elapsed();
+
+    let accuracy = if num_reads > 0 {
+        (correct as f64 / num_reads as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let lat = if samples.is_empty() {
+        None
+    } else {
+        let cnt = samples.len();
+        let sum: u128 = samples.iter().sum();
+        let mean_us = (sum as f64) / (cnt as f64);
+        let p50 = percentile(samples.clone(), 50.0);
+        let p95 = percentile(samples.clone(), 95.0);
+        let p99 = percentile(samples.clone(), 99.0);
+        Some(LatStats {
+            mean_us,
+            p50_us: p50,
+            p95_us: p95,
+            p99_us: p99,
+        })
+    };
+
     let metrics = Metrics {
         name: name.to_string(),
         total_ops: num_reads,
-        duration: start.elapsed(),
-        hits: Some(hits),
+        duration,
         sst_count: db.total_sst_count(),
         accuracy,
+        lat,
     };
-    Ok((metrics, hits))
+    Ok(metrics)
 }
 
-fn count_disk_usage(path: &Path) -> u64 {
-    std::fs::read_dir(path)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .map(|e| e.metadata().unwrap().len())
-        .sum()
+fn run_full_benchmark(cfg: &BenchConfig) -> gpdb::Result<()> {
+    println!();
+    println!(
+        "{}",
+        "==============================================================".dimmed()
+    );
+    println!(
+        "{}",
+        format!("=== Running config: {} ===", cfg.name)
+            .bold()
+            .cyan()
+    );
+    println!(
+        "{}",
+        "--------------------------------------------------------------".dimmed()
+    );
+
+    let tmp_dir = TempDir::new().expect("tempdir");
+    let db: DB<String, String> = DB::open(tmp_dir.path(), cfg.memtable_size)?;
+
+    let log_file = format!("benchmark_{}.log", cfg.name.replace(' ', "_"));
+    let mut reporter = Reporter::new(&log_file)?;
+
+    let start = Instant::now();
+    for i in (0..cfg.num_writes).step_by(cfg.batch_size) {
+        let mut batch = gpdb::WriteBatch::new();
+        for j in 0..cfg.batch_size {
+            let idx = i + j;
+            if idx >= cfg.num_writes {
+                break;
+            }
+            let key = cfg.pattern.generate(idx, cfg.key_size);
+            let val = format!("v{:0width$}", idx, width = cfg.val_size);
+            batch.put(key, val);
+        }
+        db.write_batch(batch)?;
+    }
+    reporter.record(Metrics {
+        name: "Bulk Ingestion".into(),
+        total_ops: cfg.num_writes,
+        duration: start.elapsed(),
+        sst_count: db.total_sst_count(),
+        accuracy: 100.0,
+        lat: None,
+    })?;
+
+    if cfg.num_overwrites > 0 {
+        let start = Instant::now();
+        for i in 0..cfg.num_overwrites {
+            let target = lcg(i).wrapping_mul(1664525).wrapping_add(1013904223) % cfg.num_writes;
+            let key = cfg.pattern.generate(target, cfg.key_size);
+            let val = format!("upd{:0width$}", target, width = cfg.val_size);
+            db.put(key, val)?;
+        }
+        reporter.record(Metrics {
+            name: "Random Overwrites".into(),
+            total_ops: cfg.num_overwrites,
+            duration: start.elapsed(),
+            sst_count: db.total_sst_count(),
+            accuracy: 100.0,
+            lat: None,
+        })?;
+    }
+
+    if cfg.num_reads > 0 {
+        let m = run_read_phase(
+            &db,
+            "Random Read (Dirty)",
+            cfg.num_reads,
+            cfg.num_writes,
+            None,
+            cfg.pattern,
+            cfg.key_size,
+        )?;
+        reporter.record(m)?;
+    }
+
+    if cfg.threads > 1 {
+        let threads = cfg.threads;
+        let writes_per_thread = cfg.num_writes / threads;
+        let start = Instant::now();
+        let db_arc = Arc::new(db.clone());
+
+        let mut handles = Vec::with_capacity(threads);
+        for t in 0..threads {
+            let dbc = db_arc.clone();
+            let pattern = cfg.pattern;
+            let val_size = cfg.val_size;
+            let key_pad = cfg.key_size;
+            handles.push(thread::spawn(move || {
+                for i in 0..writes_per_thread {
+                    let global = t * writes_per_thread + i;
+                    let key = pattern.generate(global, key_pad);
+                    let val = format!("thr{:0width$}", global, width = val_size);
+                    dbc.put(key, val).unwrap();
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread panic");
+        }
+
+        reporter.record(Metrics {
+            name: "Multi-Threaded Ingest".into(),
+            total_ops: threads * writes_per_thread,
+            duration: start.elapsed(),
+            sst_count: db.total_sst_count(),
+            accuracy: 100.0,
+            lat: None,
+        })?;
+    }
+
+    if cfg.num_deletes > 0 {
+        let start = Instant::now();
+        for i in 0..cfg.num_deletes {
+            let key = cfg.pattern.generate(i, cfg.key_size);
+            db.delete(key)?;
+        }
+        reporter.record(Metrics {
+            name: "Random Deletions".into(),
+            total_ops: cfg.num_deletes,
+            duration: start.elapsed(),
+            sst_count: db.total_sst_count(),
+            accuracy: 100.0,
+            lat: None,
+        })?;
+    }
+
+    let start = Instant::now();
+    while db.compaction_backlog() > 0 {
+        db.handle_compaction_results()?;
+        thread::sleep(Duration::from_millis(100));
+        if start.elapsed() > Duration::from_secs(60) {
+            println!("{}", "Compaction timeout reached".red());
+            break;
+        }
+    }
+
+    reporter.record(Metrics {
+        name: "Compaction Wait".into(),
+        total_ops: 1,
+        duration: start.elapsed(),
+        sst_count: db.total_sst_count(),
+        accuracy: 100.0,
+        lat: None,
+    })?;
+
+    if cfg.num_reads > 0 {
+        let m = run_read_phase(
+            &db,
+            "Random Read (Cleaned)",
+            cfg.num_reads,
+            cfg.num_writes,
+            Some(cfg.num_deletes),
+            cfg.pattern,
+            cfg.key_size,
+        )?;
+        reporter.record(m)?;
+    }
+
+    let total_ingested =
+        (cfg.num_writes + cfg.num_overwrites + cfg.threads * (cfg.num_writes / cfg.threads)) as u64
+            * (cfg.key_size as u64 + cfg.val_size as u64);
+
+    reporter.finalize(tmp_dir.path(), total_ingested)?;
+    Ok(())
+}
+
+fn main() -> gpdb::Result<()> {
+    let mut configs = vec![
+        BenchConfig {
+            name: "SmallSeq".into(),
+            num_writes: 50_000,
+            num_overwrites: 10_000,
+            num_reads: 20_000,
+            num_deletes: 5_000,
+            memtable_size: 4 * 1024 * 1024,
+            key_size: 16,
+            val_size: 64,
+            batch_size: 1_000,
+            threads: 1,
+            pattern: KeyPattern::Sequential,
+        },
+        BenchConfig {
+            name: "MediumRandom".into(),
+            num_writes: 200_000,
+            num_overwrites: 50_000,
+            num_reads: 50_000,
+            num_deletes: 25_000,
+            memtable_size: 8 * 1024 * 1024,
+            key_size: 24,
+            val_size: 128,
+            batch_size: 2_000,
+            threads: 4,
+            pattern: KeyPattern::SimpleRandom,
+        },
+        BenchConfig {
+            name: "StripedHighConcurrency".into(),
+            num_writes: 300_000,
+            num_overwrites: 100_000,
+            num_reads: 100_000,
+            num_deletes: 50_000,
+            memtable_size: 16 * 1024 * 1024,
+            key_size: 32,
+            val_size: 256,
+            batch_size: 4_000,
+            threads: 8,
+            pattern: KeyPattern::Striped(16),
+        },
+    ];
+
+    if std::env::var("GPDB_QUICK_BENCH").is_ok() {
+        println!(
+            "{}",
+            "Quick mode enabled: scaling workloads down".bright_yellow()
+        );
+        for cfg in &mut configs {
+            cfg.num_writes = (cfg.num_writes / 10).max(1);
+            cfg.num_overwrites = (cfg.num_overwrites / 10).max(0);
+            cfg.num_reads = (cfg.num_reads / 10).max(1);
+            cfg.num_deletes = (cfg.num_deletes / 10).max(0);
+            cfg.threads = cfg.threads.min(2);
+        }
+    }
+
+    for cfg in &configs {
+        if let Err(e) = run_full_benchmark(cfg) {
+            eprintln!("{}", format!("Benchmark failed: {:?}", e).red());
+        }
+    }
+
+    println!(
+        "{}",
+        "All benchmark configurations completed.".bold().green()
+    );
+    Ok(())
 }

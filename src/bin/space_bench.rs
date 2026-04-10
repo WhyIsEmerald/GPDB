@@ -1,9 +1,36 @@
+use colored::*;
 use gpdb::{MemTable, SSTable, SSTableId};
+use rand::distributions::Alphanumeric;
 use rand::{Rng, thread_rng};
+use std::error::Error;
+use std::fmt;
+use std::fs;
 use std::sync::Arc;
 use tempfile::TempDir;
 
-/// Represents the configuration for a single space amplification test.
+fn format_usize(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    let mut cnt = 0;
+    for c in s.chars().rev() {
+        if cnt == 3 {
+            out.push('_');
+            cnt = 0;
+        }
+        out.push(c);
+        cnt += 1;
+    }
+    out.chars().rev().collect()
+}
+
+fn format_kb(bytes: u64) -> String {
+    let kb = (bytes as f64) / 1024.0;
+    let kb_cents = (kb * 100.0).round() as i64;
+    let int_part = (kb_cents / 100) as usize;
+    let frac = (kb_cents.abs() % 100) as usize;
+    format!("{}.{}", format_usize(int_part), format!("{:02}", frac))
+}
+
 struct SpaceTestConfig {
     name: &'static str,
     key_prefix: Option<&'static str>,
@@ -13,105 +40,129 @@ struct SpaceTestConfig {
     key_type: KeyType,
 }
 
+#[derive(Clone, Copy, Debug)]
 enum KeyType {
-    /// Keys with a common prefix and a sequential suffix.
     PrefixedSequential,
-    /// Fully random keys.
     Random,
-    /// Keys that are purely sequential numbers, padded to key_length.
     Sequential,
 }
 
-/// Runs a single space amplification test based on the provided configuration.
-fn run_space_test(config: &SpaceTestConfig, tmp_dir: &TempDir) {
-    println!("\n=== Running Test: {} ===", config.name);
+impl fmt::Display for KeyType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+fn generate_key(config: &SpaceTestConfig, idx: usize) -> String {
+    match config.key_type {
+        KeyType::PrefixedSequential => {
+            let prefix = config.key_prefix.unwrap_or("");
+            let width = config.key_length.saturating_sub(prefix.len());
+            format!("{}{:0width$}", prefix, idx, width = width)
+        }
+        KeyType::Random => thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(config.key_length)
+            .map(char::from)
+            .collect(),
+        KeyType::Sequential => format!("{:0width$}", idx, width = config.key_length),
+    }
+}
+
+fn run_space_test(config: &SpaceTestConfig, tmp_dir: &TempDir) -> Result<(), Box<dyn Error>> {
+    println!(
+        "{}",
+        format!("\n=== Running Test: {} ===", config.name).bold()
+    );
 
     let path = tmp_dir.path();
     let mut mem = MemTable::new();
     let val = Arc::new("v".repeat(config.value_length));
-    let mut total_raw_bytes = 0;
+    let mut total_raw_bytes: u64 = 0;
 
     for i in 0..config.num_entries {
-        let key = match config.key_type {
-            KeyType::PrefixedSequential => {
-                let prefix = config.key_prefix.unwrap_or("");
-                format!(
-                    "{}{:0width$}",
-                    prefix,
-                    i,
-                    width = config.key_length - prefix.len()
-                )
-            }
-            KeyType::Random => {
-                let charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-                let mut key = String::with_capacity(config.key_length);
-                let mut rng = thread_rng();
-                for _ in 0..config.key_length {
-                    let idx = rng.gen_range(0..charset.len());
-                    key.push(charset.chars().nth(idx).unwrap());
-                }
-                key
-            }
-            KeyType::Sequential => {
-                format!("{:0width$}", i, width = config.key_length)
-            }
-        };
-
-        total_raw_bytes += key.len() as u64 + config.value_length as u64;
+        let key = generate_key(config, i);
+        total_raw_bytes =
+            total_raw_bytes.saturating_add(key.len() as u64 + config.value_length as u64);
         mem.put(key, val.clone());
     }
 
-    let sstable_path = path.join(format!(
-        "{}.sst",
-        config.name.replace(" ", "_").to_lowercase()
-    ));
-    let _ = SSTable::write_from_memtable(&sstable_path, &mem, SSTableId(1)).unwrap();
+    let sstable_name = config.name.replace(' ', "_").to_lowercase() + ".sst";
+    let sstable_path = path.join(&sstable_name);
+    SSTable::write_from_memtable(&sstable_path, &mem, SSTableId(1))?;
 
-    let metadata = std::fs::metadata(&sstable_path).unwrap();
+    let metadata = fs::metadata(&sstable_path)?;
     let on_disk_bytes = metadata.len();
-
     let amp_factor = on_disk_bytes as f64 / total_raw_bytes as f64;
 
-    println!("  Test Name:          {}", config.name);
-    println!("  Key Type:           {:?}", config.key_type);
-    println!("  Num Entries:        {}", config.num_entries);
-    println!("  Key Length:         {}", config.key_length);
-    println!("  Value Length:       {}", config.value_length);
     println!(
-        "  Raw Data Ingested:  {:>10.2} KB",
-        total_raw_bytes as f64 / 1024.0
+        "{} {}",
+        "Test Name:".bright_blue().bold(),
+        config.name.white()
     );
     println!(
-        "  SSTable on Disk:    {:>10.2} KB",
-        on_disk_bytes as f64 / 1024.0
+        "{} {}",
+        "Key Type:".bright_blue().bold(),
+        format!("{}", config.key_type).white()
     );
-    println!("--------------------------------------");
-    println!("  Space Amplification: {:>10.2}x", amp_factor);
+    if let Some(pfx) = config.key_prefix {
+        println!("{} {}", "Key Prefix:".bright_blue().bold(), pfx.white());
+    }
+    println!(
+        "{} {}",
+        "Num Entries:".bright_blue().bold(),
+        format_usize(config.num_entries).white()
+    );
+    println!(
+        "{} {}",
+        "Key Length:".bright_blue().bold(),
+        format_usize(config.key_length).white()
+    );
+    println!(
+        "{} {}",
+        "Value Length:".bright_blue().bold(),
+        format_usize(config.value_length).white()
+    );
+    println!(
+        "{} {} KB",
+        "Raw Data Ingested:".bright_blue().bold(),
+        format_kb(total_raw_bytes)
+    );
+    println!(
+        "{} {} KB",
+        "SSTable on Disk:".bright_blue().bold(),
+        format_kb(on_disk_bytes)
+    );
+    println!("{}", "--------------------------------------".dimmed());
 
-    if amp_factor < 1.05 {
-        println!("  Status: ELITE");
+    let amp_text = format!("{:>6.2}x", amp_factor);
+    let status = if amp_factor < 1.05 {
+        ("ELITE".green().bold(), amp_text.green())
     } else if amp_factor < 1.15 {
-        println!("  Status: EXCELLENT");
+        ("EXCELLENT".yellow().bold(), amp_text.yellow())
     } else {
-        println!("  Status: GOOD");
-    }
+        ("GOOD".cyan().bold(), amp_text.cyan())
+    };
+
+    println!(
+        "{} {}",
+        "Space Amplification:".bright_blue().bold(),
+        status.1
+    );
+    println!("{} {}", "Status:".bright_blue().bold(), status.0);
+
+    println!(
+        "{}",
+        "--------------------------------------------------------------".dimmed()
+    );
+    println!();
+
+    Ok(())
 }
 
-// Implement Debug for KeyType for printing
-impl std::fmt::Debug for KeyType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            KeyType::PrefixedSequential => write!(f, "PrefixedSequential"),
-            KeyType::Random => write!(f, "Random"),
-            KeyType::Sequential => write!(f, "Sequential"),
-        }
-    }
-}
-
-fn main() {
-    let tmp_dir = TempDir::new().unwrap();
-
-    println!("=== GPDB 'ELITE' SPACE AMPLIFICATION ANALYSIS ===");
+fn main() -> Result<(), Box<dyn Error>> {
+    let tmp_dir = TempDir::new()?;
+    println!("{}", "=== GPDB SPACE AMPLIFICATION ANALYSIS ===".bold());
 
     let tests = vec![
         SpaceTestConfig {
@@ -164,9 +215,15 @@ fn main() {
         },
     ];
 
-    for config in tests {
-        run_space_test(&config, &tmp_dir);
+    for config in &tests {
+        if let Err(e) = run_space_test(config, &tmp_dir) {
+            eprintln!("{} {}", "Test failed:".red().bold(), e.to_string().red());
+        }
     }
 
-    println!("\n=== All Space Amplification Tests Completed ===");
+    println!(
+        "\n{}",
+        "=== All Space Amplification Tests Completed ===".bold()
+    );
+    Ok(())
 }

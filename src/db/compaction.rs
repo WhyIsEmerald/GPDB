@@ -232,7 +232,8 @@ impl Compactor {
         V: Serialize + DeserializeOwned,
     {
         let stream = MergeStream::new(sstables)?;
-        SSTable::write_from_iter(output_path, stream, new_id)
+        let target_level = 1; // Default for compacting L0 to disk
+        SSTable::write_from_iter(output_path, stream, new_id, target_level)
     }
 
     /// Merges a slice of L0 SSTables into a single new L1 SSTable.

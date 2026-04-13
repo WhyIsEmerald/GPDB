@@ -1,23 +1,42 @@
 use crate::db::datablock::{BLOCK_SIZE, DataBlock, DeltaBlockBuilder};
 use crate::db::io::{read_record, write_record};
-use crate::{DBKey, Entry, Error, MemTable, Result, SSTableId, TableMeta, ValueEntry};
-use serde::{Serialize, de::DeserializeOwned};
+use crate::{
+    DBKey, Entry, Error, MemTable, Result, SSTableId, TableMeta, ValueEntry, COMPRESSION_NONE,
+    FILTER_TYPE_XOR16, FILTER_TYPE_XOR8,
+};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use xorf::{Filter, Xor8, Xor16};
 
 const FORMAT_VERSION: u32 = 1;
-const COMPRESSION_NONE: u8 = 0;
 
-/// Contains (index_off: 8, meta_off: 8, id: 8, magic: 8, version: 4, compression: 1, padding: 11)
-/// All 8-byte values are aligned to 8-byte boundaries.
-const FOOTER_SIZE: u64 = 48;
+/// Footer size: 64 bytes.
+/// Layout: [filter_off: 8][index_off: 8][meta_off: 8][id: 8][magic: 8][version: 4][reserved: 20]
+const FOOTER_SIZE: u64 = 64;
 const MAGIC_NUMBER: u64 = 0xDEADC0DEBEEFCAFF;
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum FilterVariant {
+    Xor8(Xor8),
+    Xor16(Xor16),
+}
+
+impl FilterVariant {
+    pub fn contains(&self, key: &u64) -> bool {
+        match self {
+            Self::Xor8(f) => f.contains(key),
+            Self::Xor16(f) => f.contains(key),
+        }
+    }
+}
+
 /// A Sorted String Table (SSTable) is an immutable, on-disk map from keys to values.
+/// It uses a tiered XOR Filter (Xor8 for L0, Xor16 for L1+) for elite-speed lookups.
 #[derive(Debug)]
 pub struct SSTable<K, V>
 where
@@ -28,8 +47,10 @@ where
     reader: Arc<Mutex<BufReader<File>>>,
     index: BTreeMap<K, u64>,
     meta: TableMeta<K>,
+    filter: FilterVariant,
     id: SSTableId,
     version: u32,
+    filter_offset: u64,
     index_offset: u64,
     file_size: u64,
     _phantom: PhantomData<(K, V)>,
@@ -46,8 +67,10 @@ where
             reader: Arc::clone(&self.reader),
             index: self.index.clone(),
             meta: self.meta.clone(),
+            filter: self.filter.clone(),
             id: self.id,
             version: self.version,
+            filter_offset: self.filter_offset,
             index_offset: self.index_offset,
             file_size: self.file_size,
             _phantom: PhantomData,
@@ -60,7 +83,7 @@ where
     K: DBKey,
     V: Serialize + DeserializeOwned,
 {
-    /// Opens an existing SSTable file and loads its index and metadata into memory.
+    /// Opens an existing SSTable file and loads its index, metadata, and XOR Filter.
     pub fn open(path: &Path) -> Result<Self> {
         let file = OpenOptions::new().read(true).open(path)?;
         let mut reader = BufReader::new(file);
@@ -73,7 +96,9 @@ where
 
         let mut buf_8 = [0u8; 8];
         let mut buf_4 = [0u8; 4];
-        let mut buf_1 = [0u8; 1];
+
+        reader.read_exact(&mut buf_8)?;
+        let filter_offset = u64::from_le_bytes(buf_8);
 
         reader.read_exact(&mut buf_8)?;
         let index_offset = u64::from_le_bytes(buf_8);
@@ -90,9 +115,6 @@ where
         reader.read_exact(&mut buf_4)?;
         let version = u32::from_le_bytes(buf_4);
 
-        reader.read_exact(&mut buf_1)?;
-        let _compression = buf_1[0];
-
         if magic_number != MAGIC_NUMBER {
             return Err(Error::Corruption("Invalid magic number".to_string()));
         }
@@ -103,14 +125,30 @@ where
             )));
         }
 
-        reader.seek(SeekFrom::Start(index_offset))?;
-        let index: BTreeMap<K, u64> = read_record(&mut reader)?.ok_or_else(|| {
-            Error::Corruption("SSTable index block is missing or empty".to_string())
-        })?;
-
+        // Load Metadata first to get filter type
         reader.seek(SeekFrom::Start(meta_offset))?;
         let meta: TableMeta<K> = read_record(&mut reader)?.ok_or_else(|| {
             Error::Corruption("SSTable meta block is missing or empty".to_string())
+        })?;
+
+        // Load Filter based on type in meta
+        reader.seek(SeekFrom::Start(filter_offset))?;
+        let filter: FilterVariant = if meta.filter_type == FILTER_TYPE_XOR16 {
+            let f: Xor16 = read_record(&mut reader)?.ok_or_else(|| {
+                Error::Corruption("SSTable Xor16 filter block is missing".to_string())
+            })?;
+            FilterVariant::Xor16(f)
+        } else {
+            let f: Xor8 = read_record(&mut reader)?.ok_or_else(|| {
+                Error::Corruption("SSTable Xor8 filter block is missing".to_string())
+            })?;
+            FilterVariant::Xor8(f)
+        };
+
+        // Load Sparse Index
+        reader.seek(SeekFrom::Start(index_offset))?;
+        let index: BTreeMap<K, u64> = read_record(&mut reader)?.ok_or_else(|| {
+            Error::Corruption("SSTable index block is missing or empty".to_string())
         })?;
 
         Ok(SSTable {
@@ -118,17 +156,24 @@ where
             reader: Arc::new(Mutex::new(reader)),
             index,
             meta,
+            filter,
             id,
             version,
+            filter_offset,
             index_offset,
             file_size: file_len,
             _phantom: PhantomData,
         })
     }
 
-    /// Retrieves a value.
+    /// Retrieves a value by first checking the XOR Filter to potentially skip disk I/O.
     pub fn get(&self, key: &K) -> Result<Option<ValueEntry<V>>> {
         if key < self.min_key() || key > self.max_key() {
+            return Ok(None);
+        }
+
+        let key_hash = self.hash_key(key);
+        if !self.filter.contains(&key_hash) {
             return Ok(None);
         }
 
@@ -158,8 +203,16 @@ where
         Ok(None)
     }
 
-    /// Writes a stream of entries using the DeltaBlockBuilder.
-    pub fn write_from_iter<I>(path: &Path, iter: I, id: SSTableId) -> Result<Self>
+    fn hash_key(&self, key: &K) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hasher;
+        let mut s = DefaultHasher::new();
+        key.hash(&mut s);
+        s.finish()
+    }
+
+    /// Writes a stream of entries, using level to decide between Xor8 and Xor16.
+    pub fn write_from_iter<I>(path: &Path, iter: I, id: SSTableId, level: usize) -> Result<Self>
     where
         K: DBKey,
         V: Serialize + DeserializeOwned,
@@ -168,6 +221,7 @@ where
         let file = OpenOptions::new().write(true).create_new(true).open(path)?;
         let mut writer = BufWriter::new(file);
         let mut sparse_index = BTreeMap::new();
+        let mut key_hashes = Vec::new();
 
         let mut min_key = None;
         let mut max_key = None;
@@ -183,6 +237,12 @@ where
             }
             max_key = Some(entry.key.clone());
             num_entries += 1;
+
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::Hasher;
+            let mut s = DefaultHasher::new();
+            entry.key.hash(&mut s);
+            key_hashes.push(s.finish());
 
             if builder.is_empty() {
                 sparse_index.insert(entry.key.clone(), current_offset);
@@ -206,24 +266,41 @@ where
         let min_key = min_key.ok_or_else(|| Error::Corruption("Empty SSTable".to_string()))?;
         let max_key = max_key.unwrap();
 
-        let index_offset = current_offset;
+        // 1. Build and Write XOR Filter
+        let filter_offset = current_offset;
+        let filter_type = if level > 0 { FILTER_TYPE_XOR16 } else { FILTER_TYPE_XOR8 };
+        
+        let filter_size = if filter_type == FILTER_TYPE_XOR16 {
+            let f = Xor16::from(&key_hashes);
+            write_record(&mut writer, &f)?
+        } else {
+            let f = Xor8::from(&key_hashes);
+            write_record(&mut writer, &f)?
+        };
+
+        // 2. Write Sparse Index
+        let index_offset = filter_offset + filter_size;
         let index_size = write_record(&mut writer, &sparse_index)?;
 
+        // 3. Write Metadata
         let meta_offset = index_offset + index_size;
         let meta = TableMeta {
             min_key,
             max_key,
             num_entries,
+            filter_type,
+            compression_type: COMPRESSION_NONE,
         };
         write_record(&mut writer, &meta)?;
 
+        // 4. Write Aligned Footer (64 bytes)
+        writer.write_all(&filter_offset.to_le_bytes())?;
         writer.write_all(&index_offset.to_le_bytes())?;
         writer.write_all(&meta_offset.to_le_bytes())?;
         writer.write_all(&id.0.to_le_bytes())?;
         writer.write_all(&MAGIC_NUMBER.to_le_bytes())?;
         writer.write_all(&FORMAT_VERSION.to_le_bytes())?;
-        writer.write_all(&[COMPRESSION_NONE])?;
-        writer.write_all(&[0u8; 11])?;
+        writer.write_all(&[0u8; 20])?; // Reserved for future offsets/flags
 
         writer.flush()?;
 
@@ -241,7 +318,7 @@ where
                 value: v.clone(),
             })
         });
-        Self::write_from_iter(path, iter, id)
+        Self::write_from_iter(path, iter, id, 0)
     }
 
     pub fn path(&self) -> &Path {
@@ -278,7 +355,7 @@ where
         let file = File::open(&self.path)?;
         Ok(SSTableIterator {
             reader: BufReader::new(file),
-            index_offset: self.index_offset,
+            data_end_offset: self.filter_offset,
             current_block: None,
             current_idx: 0,
             _phantom: PhantomData,
@@ -288,7 +365,7 @@ where
 
 pub struct SSTableIterator<K, V> {
     reader: BufReader<File>,
-    index_offset: u64,
+    data_end_offset: u64,
     current_block: Option<DataBlock<K, V>>,
     current_idx: usize,
     _phantom: PhantomData<(K, V)>,
@@ -301,7 +378,7 @@ where
 {
     fn load_next_block(&mut self) -> Result<bool> {
         let current_pos = self.reader.stream_position()?;
-        if current_pos >= self.index_offset {
+        if current_pos >= self.data_end_offset {
             return Ok(false);
         }
 
@@ -351,6 +428,26 @@ mod tests {
         let tmp_dir = TempDir::new().expect("Failed to create temporary directory");
         let sstable_path = tmp_dir.path().join("L0-00001.sst");
         (tmp_dir, sstable_path)
+    }
+
+    #[test]
+    fn test_tiered_xor_filters() {
+        let (tmp_dir, _) = setup();
+        
+        // 1. Test L0 (Xor8)
+        let l0_path = tmp_dir.path().join("L0.sst");
+        let mut memtable = MemTable::new();
+        memtable.put("k1".to_string(), Arc::new("v1".to_string()));
+        let sst_l0 = SSTable::write_from_memtable(&l0_path, &memtable, SSTableId(1)).unwrap();
+        assert!(matches!(sst_l0.filter, FilterVariant::Xor8(_)));
+        assert!(sst_l0.get(&"k1".to_string()).unwrap().is_some());
+
+        // 2. Test L1 (Xor16)
+        let l1_path = tmp_dir.path().join("L1.sst");
+        let entries = vec![Ok(Entry { key: "k2".to_string(), value: ValueEntry { value: Some(Arc::new("v2".to_string())), is_tombstone: false } })];
+        let sst_l1 = SSTable::write_from_iter(&l1_path, entries.into_iter(), SSTableId(2), 1).unwrap();
+        assert!(matches!(sst_l1.filter, FilterVariant::Xor16(_)));
+        assert!(sst_l1.get(&"k2".to_string()).unwrap().is_some());
     }
 
     #[test]

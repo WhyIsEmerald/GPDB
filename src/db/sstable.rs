@@ -1,8 +1,8 @@
 use crate::db::datablock::{BLOCK_SIZE, DataBlock, DeltaBlockBuilder};
 use crate::db::io::{read_record, write_record};
 use crate::{
-    DBKey, Entry, Error, MemTable, Result, SSTableId, TableMeta, ValueEntry, COMPRESSION_NONE,
-    FILTER_TYPE_XOR16, FILTER_TYPE_XOR8,
+    COMPRESSION_NONE, DBKey, Entry, Error, FILTER_TYPE_XOR8, FILTER_TYPE_XOR16, MemTable, Result,
+    SSTableId, TableMeta, ValueEntry,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeMap;
@@ -266,10 +266,14 @@ where
         let min_key = min_key.ok_or_else(|| Error::Corruption("Empty SSTable".to_string()))?;
         let max_key = max_key.unwrap();
 
-        // 1. Build and Write XOR Filter
+        // Build and Write XOR Filter
         let filter_offset = current_offset;
-        let filter_type = if level > 0 { FILTER_TYPE_XOR16 } else { FILTER_TYPE_XOR8 };
-        
+        let filter_type = if level > 0 {
+            FILTER_TYPE_XOR16
+        } else {
+            FILTER_TYPE_XOR8
+        };
+
         let filter_size = if filter_type == FILTER_TYPE_XOR16 {
             let f = Xor16::from(&key_hashes);
             write_record(&mut writer, &f)?
@@ -278,11 +282,11 @@ where
             write_record(&mut writer, &f)?
         };
 
-        // 2. Write Sparse Index
+        // Write Sparse Index
         let index_offset = filter_offset + filter_size;
         let index_size = write_record(&mut writer, &sparse_index)?;
 
-        // 3. Write Metadata
+        // Write Metadata
         let meta_offset = index_offset + index_size;
         let meta = TableMeta {
             min_key,
@@ -293,7 +297,7 @@ where
         };
         write_record(&mut writer, &meta)?;
 
-        // 4. Write Aligned Footer (64 bytes)
+        // Write Aligned Footer (64 bytes)
         writer.write_all(&filter_offset.to_le_bytes())?;
         writer.write_all(&index_offset.to_le_bytes())?;
         writer.write_all(&meta_offset.to_le_bytes())?;
@@ -433,7 +437,7 @@ mod tests {
     #[test]
     fn test_tiered_xor_filters() {
         let (tmp_dir, _) = setup();
-        
+
         // 1. Test L0 (Xor8)
         let l0_path = tmp_dir.path().join("L0.sst");
         let mut memtable = MemTable::new();
@@ -444,8 +448,15 @@ mod tests {
 
         // 2. Test L1 (Xor16)
         let l1_path = tmp_dir.path().join("L1.sst");
-        let entries = vec![Ok(Entry { key: "k2".to_string(), value: ValueEntry { value: Some(Arc::new("v2".to_string())), is_tombstone: false } })];
-        let sst_l1 = SSTable::write_from_iter(&l1_path, entries.into_iter(), SSTableId(2), 1).unwrap();
+        let entries = vec![Ok(Entry {
+            key: "k2".to_string(),
+            value: ValueEntry {
+                value: Some(Arc::new("v2".to_string())),
+                is_tombstone: false,
+            },
+        })];
+        let sst_l1 =
+            SSTable::write_from_iter(&l1_path, entries.into_iter(), SSTableId(2), 1).unwrap();
         assert!(matches!(sst_l1.filter, FilterVariant::Xor16(_)));
         assert!(sst_l1.get(&"k2".to_string()).unwrap().is_some());
     }

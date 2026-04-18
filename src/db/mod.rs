@@ -1,6 +1,5 @@
 pub mod compaction;
 pub mod database;
-pub mod datablock;
 pub mod inner;
 pub mod io;
 pub mod manifest;
@@ -9,7 +8,6 @@ pub mod sstable;
 pub mod wal;
 pub use compaction::*;
 pub use database::*;
-pub use datablock::*;
 pub use manifest::*;
 pub use memtable::*;
 pub use sstable::*;

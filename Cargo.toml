@@ -16,6 +16,7 @@ xorf = { version = "0.11", features = ["serde"] }
 
 [dev-dependencies]
 criterion = "0.5"
+proptest = "1.6"
 
 [[bench]]
 name = "memtable_bench"

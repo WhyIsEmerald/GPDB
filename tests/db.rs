@@ -2,7 +2,7 @@ use gpdb::DB;
 use tempfile::TempDir;
 
 #[test]
-fn test_db_basic_ops() {
+fn db_basic_ops() {
     let tmp_dir = TempDir::new().unwrap();
     let db: DB<String, String> = DB::open(tmp_dir.path(), 1024).expect("Failed to open DB");
 
@@ -19,7 +19,7 @@ fn test_db_basic_ops() {
 }
 
 #[test]
-fn test_db_persistence_and_recovery() {
+fn db_persistence_and_recovery() {
     let tmp_dir = TempDir::new().unwrap();
     let path = tmp_dir.path();
 
@@ -51,7 +51,7 @@ fn test_db_persistence_and_recovery() {
 }
 
 #[test]
-fn test_db_flush_and_read() {
+fn db_flush_and_read() {
     let tmp_dir = TempDir::new().unwrap();
     let db: DB<String, String> = DB::open(tmp_dir.path(), 10).unwrap();
 
@@ -68,7 +68,7 @@ fn test_db_flush_and_read() {
 }
 
 #[test]
-fn test_db_compaction_integration() {
+fn db_compaction_integration() {
     let tmp_dir = TempDir::new().unwrap();
     let path = tmp_dir.path();
 
@@ -108,7 +108,7 @@ fn test_db_compaction_integration() {
 }
 
 #[test]
-fn test_db_manifest_complex_reconciliation() {
+fn db_manifest_complex_reconciliation() {
     let tmp_dir = TempDir::new().unwrap();
     let path = tmp_dir.path();
 
@@ -133,7 +133,7 @@ fn test_db_manifest_complex_reconciliation() {
 }
 
 #[test]
-fn test_db_level_n_compaction() {
+fn db_level_n_compaction() {
     let tmp_dir = TempDir::new().unwrap();
     let path = tmp_dir.path();
 

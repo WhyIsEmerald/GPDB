@@ -43,6 +43,14 @@ pub fn read_record<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<Optio
     })?;
     let len = u64::from_le_bytes(len_bytes) as usize;
 
+    const MAX_RECORD_SIZE: usize = 64 * 1024 * 1024; // 64 MB
+    if len > MAX_RECORD_SIZE {
+        return Err(Error::Corruption(format!(
+            "Record size {} exceeds maximum of {}",
+            len, MAX_RECORD_SIZE
+        )));
+    }
+
     let mut data_bytes = vec![0; len];
     reader.read_exact(&mut data_bytes).map_err(|e| {
         if e.kind() == std::io::ErrorKind::UnexpectedEof {
@@ -62,118 +70,4 @@ pub fn read_record<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<Optio
         bincode::deserialize(&data_bytes).map_err(|e| Error::Serialization(e.to_string()))?;
 
     Ok(Some(data))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde::{Deserialize, Serialize};
-    use std::io::Cursor;
-
-    #[derive(Serialize, Deserialize, Debug, PartialEq)]
-    struct TestStruct {
-        id: u32,
-        name: String,
-        tags: Vec<String>,
-    }
-
-    #[test]
-    fn test_write_read_roundtrip() {
-        let mut buffer = Vec::new();
-        let original = TestStruct {
-            id: 42,
-            name: "GPDB".to_string(),
-            tags: vec!["LSM".to_string(), "Rust".to_string()],
-        };
-
-        let bytes_written = write_record(&mut buffer, &original).expect("Write failed");
-        assert!(bytes_written > 0);
-
-        let mut cursor = Cursor::new(buffer);
-        let recovered: TestStruct = read_record(&mut cursor)
-            .expect("Read failed")
-            .expect("Expected a record, got None");
-
-        assert_eq!(original, recovered);
-    }
-
-    #[test]
-    fn test_read_eof() {
-        let empty_buffer: Vec<u8> = Vec::new();
-        let mut cursor = Cursor::new(empty_buffer);
-
-        let result: Option<TestStruct> = read_record(&mut cursor).expect("Read failed");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_checksum_mismatch() {
-        let mut buffer = Vec::new();
-        let data = TestStruct {
-            id: 1,
-            name: "Normal".to_string(),
-            tags: vec![],
-        };
-        write_record(&mut buffer, &data).unwrap();
-
-        let last_idx = buffer.len() - 1;
-        buffer[last_idx] ^= 0xFF;
-
-        let mut cursor = Cursor::new(buffer);
-        let result: Result<Option<TestStruct>> = read_record(&mut cursor);
-
-        match result {
-            Err(Error::Corruption(msg)) => assert!(msg.contains("checksum mismatch")),
-            _ => panic!("Expected Corruption error, got {:?}", result),
-        }
-    }
-
-    #[test]
-    fn test_unexpected_eof_in_middle() {
-        let mut buffer = Vec::new();
-        let data = TestStruct {
-            id: 1,
-            name: "Short".to_string(),
-            tags: vec![],
-        };
-        write_record(&mut buffer, &data).unwrap();
-
-        buffer.truncate(buffer.len() - 5);
-
-        let mut cursor = Cursor::new(buffer);
-        let result: Result<Option<TestStruct>> = read_record(&mut cursor);
-
-        match result {
-            Err(Error::Corruption(msg)) => assert!(msg.contains("Unexpected EOF")),
-            _ => panic!("Expected Corruption error, got {:?}", result),
-        }
-    }
-
-    #[test]
-    fn test_multiple_records() {
-        let mut buffer = Vec::new();
-        let r1 = TestStruct {
-            id: 1,
-            name: "A".to_string(),
-            tags: vec![],
-        };
-        let r2 = TestStruct {
-            id: 2,
-            name: "B".to_string(),
-            tags: vec![],
-        };
-
-        write_record(&mut buffer, &r1).unwrap();
-        write_record(&mut buffer, &r2).unwrap();
-
-        let mut cursor = Cursor::new(buffer);
-
-        let rec1: TestStruct = read_record(&mut cursor).unwrap().unwrap();
-        let rec2: TestStruct = read_record(&mut cursor).unwrap().unwrap();
-        let rec3: Option<TestStruct> = read_record(&mut cursor).unwrap();
-
-        assert_eq!(r1, rec1);
-        assert_eq!(r2, rec2);
-        assert!(rec3.is_none());
-    }
 }

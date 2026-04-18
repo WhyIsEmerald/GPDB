@@ -1,5 +1,19 @@
 # GPDB Changelog
 
+## [0.2.0] - 2026-04-18
+
+### Architecture & Refactoring
+- **SSTable Decoupling**: Refactored monolithic `sstable.rs` into a module-based architecture.
+    - Extracted `datablock`, `filter`, and `iterator` into distinct sub-modules for maintainability.
+- **API Surface**: Cleaned up `lib.rs` exports and resolved ambiguous glob re-exports.
+
+### Testing & Reliability
+- **Test Suite Overhaul**: Migrated all inline tests to a dedicated `tests/` directory.
+- **Property-Based Testing**: Integrated `proptest` for prefix compression validation.
+- **Stress & Concurrency**: Added high-load concurrent stress tests for DB state transitions.
+- **Recovery & Integrity**: Implemented crash recovery tests for corrupted WAL and orphan SSTables.
+- **Security**: Patched OOM vulnerability in record reading by enforcing a maximum allocation limit.
+
 ## [0.1.0-alpha.1] - 2026-04-08
 
 ### Storage Engine (SSTable v3)

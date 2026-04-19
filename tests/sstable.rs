@@ -32,10 +32,10 @@ fn tiered_xor_filters() {
         SSTable::write_from_iter(&l1_path, entries.into_iter(), SSTableId(2), 1, None).unwrap();
     assert!(matches!(sst_l1.filter(), FilterVariant::Xor16(_)));
     assert!(sst_l1.get(&"k2".to_string()).unwrap().is_some());
-    }
+}
 
-    #[test]
-    fn test_delta_encoding_correctness() {
+#[test]
+fn test_delta_encoding_correctness() {
     let (_tmp_dir, sstable_path) = setup();
     let mut memtable: MemTable<String, String> = MemTable::new();
 

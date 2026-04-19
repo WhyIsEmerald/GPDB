@@ -72,7 +72,10 @@ where
     K: DBKey + Send + Sync + 'static,
     V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
-    pub fn open(path: &Path, block_cache: Option<Arc<crate::db::cache::BlockCache<K, V>>>) -> Result<Self> {
+    pub fn open(
+        path: &Path,
+        block_cache: Option<Arc<crate::db::cache::BlockCache<K, V>>>,
+    ) -> Result<Self> {
         let file = OpenOptions::new().read(true).open(path)?;
         let mut reader = BufReader::new(file);
         let file_len = reader.seek(SeekFrom::End(0))?;
@@ -195,16 +198,7 @@ where
             Arc::new(block)
         };
 
-        for entry in block.iter() {
-            if &entry.key == key {
-                return Ok(Some(entry.value));
-            }
-            if &entry.key > key {
-                break;
-            }
-        }
-
-        Ok(None)
+        block.get(key).map_or(Ok(None), |v| Ok(Some(v)))
     }
 
     fn hash_key(&self, key: &K) -> u64 {

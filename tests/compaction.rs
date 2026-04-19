@@ -117,8 +117,8 @@ fn compactor_l0_to_disk() {
     let sst2 = SSTable::write_from_memtable(&path2, &mem2, SSTableId(2), None).unwrap();
 
     let l1_path = tmp_dir.path().join("L1-5.sst");
-    let sst_l1 =
-        Compactor::compact_l0(&[sst1, sst2], &l1_path, SSTableId(5), None).expect("Compaction failed");
+    let sst_l1 = Compactor::compact_l0(&[sst1, sst2], &l1_path, SSTableId(5), None)
+        .expect("Compaction failed");
 
     assert_eq!(sst_l1.id(), SSTableId(5));
     assert_eq!(sst_l1.len(), 3);

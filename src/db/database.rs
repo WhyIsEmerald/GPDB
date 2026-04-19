@@ -1,6 +1,8 @@
 use crate::db::compaction::Compactor;
 use crate::db::inner::{DBInner, MANIFEST_FILE_NAME, WAL_FILE_NAME};
-use crate::{BlockCache, DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId, Wal};
+use crate::{
+    BlockCache, DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId, Wal,
+};
 use parking_lot::RwLock;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashSet;

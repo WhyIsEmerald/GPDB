@@ -34,6 +34,75 @@ impl<K, V> DataBlock<K, V> {
             _phantom: PhantomData,
         }
     }
+
+    /// Get a value by key from the data block.
+    pub fn get(&self, target: &K) -> Option<crate::ValueEntry<V>>
+    where
+        K: DBKey,
+        V: serde::de::DeserializeOwned,
+    {
+        if self.restart_points.is_empty() {
+            return None;
+        }
+
+        let mut left = 0;
+        let mut right = self.restart_points.len() - 1;
+        let mut start_index = 0;
+
+        while left <= right {
+            let mid = (left + right) / 2;
+            let offset = self.restart_points[mid] as usize;
+
+            // Decode full key at restart point
+            let mut cursor = Cursor::new(&self.data[offset..]);
+            let mut buf_4 = [0u8; 4];
+            cursor.read_exact(&mut buf_4).ok()?;
+            let shared = u32::from_le_bytes(buf_4);
+            cursor.read_exact(&mut buf_4).ok()?;
+            let unshared = u32::from_le_bytes(buf_4);
+            cursor.read_exact(&mut buf_4).ok()?;
+            let _val_len = u32::from_le_bytes(buf_4);
+
+            // Restart points MUST have shared == 0
+            if shared != 0 {
+                return None;
+            }
+
+            let mut key_bytes = vec![0u8; unshared as usize];
+            cursor.read_exact(&mut key_bytes).ok()?;
+            let key: K = bincode::deserialize(&key_bytes).ok()?;
+
+            match key.cmp(target) {
+                std::cmp::Ordering::Less => {
+                    start_index = mid;
+                    left = mid + 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    if mid == 0 {
+                        break;
+                    }
+                    right = mid - 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    start_index = mid;
+                    break;
+                }
+            }
+        }
+
+        let mut iter = self.iter();
+        iter.seek_to_offset(self.restart_points[start_index] as usize);
+
+        while let Some(entry) = iter.next() {
+            match entry.key.cmp(target) {
+                std::cmp::Ordering::Equal => return Some(entry.value),
+                std::cmp::Ordering::Greater => return None,
+                std::cmp::Ordering::Less => continue,
+            }
+        }
+
+        None
+    }
 }
 
 /// BlockBuilder helps group items into DataBlocks using Prefix Compression.
@@ -117,6 +186,13 @@ pub struct DataBlockIterator<'a, K, V> {
     cursor: Cursor<&'a Vec<u8>>,
     last_key_bytes: Vec<u8>,
     _phantom: PhantomData<(K, V)>,
+}
+
+impl<'a, K, V> DataBlockIterator<'a, K, V> {
+    pub fn seek_to_offset(&mut self, offset: usize) {
+        self.cursor.set_position(offset as u64);
+        self.last_key_bytes.clear();
+    }
 }
 
 impl<'a, K, V> Iterator for DataBlockIterator<'a, K, V>

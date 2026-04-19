@@ -198,16 +198,7 @@ where
             Arc::new(block)
         };
 
-        for entry in block.iter() {
-            if &entry.key == key {
-                return Ok(Some(entry.value));
-            }
-            if &entry.key > key {
-                break;
-            }
-        }
-
-        Ok(None)
+        block.get(key).map_or(Ok(None), |v| Ok(Some(v)))
     }
 
     fn hash_key(&self, key: &K) -> u64 {

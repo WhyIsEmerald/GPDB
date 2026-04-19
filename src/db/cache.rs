@@ -33,9 +33,6 @@ where
     V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     pub fn new(capacity_bytes: u64) -> Self {
-        // Moka can bound by entry count or weight.
-        // For now, we use entry count assuming ~4KB blocks.
-        // 10,000 blocks ~= 40MB.
         let max_capacity = capacity_bytes / 4096;
 
         let cache = Cache::builder().max_capacity(max_capacity).build();

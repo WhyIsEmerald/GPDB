@@ -1,6 +1,7 @@
 use crate::db::compaction::{CompactionResult, CompactionTask};
 use crate::{
-    BlockCache, DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId, Wal, WriteBatch,
+    BlockCache, DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId,
+    Wal, WriteBatch,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashSet;
@@ -214,8 +215,12 @@ where
         let filename = format!("L0-{}.sst", id);
         let path = self.path.join(&filename);
 
-        let new_sstable =
-            SSTable::write_from_memtable(&path, &self.memtable, id, Some(Arc::clone(&self.block_cache)))?;
+        let new_sstable = SSTable::write_from_memtable(
+            &path,
+            &self.memtable,
+            id,
+            Some(Arc::clone(&self.block_cache)),
+        )?;
 
         {
             let mut manifest = self.manifest.lock();

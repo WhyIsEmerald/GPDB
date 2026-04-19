@@ -72,7 +72,10 @@ where
     K: DBKey + Send + Sync + 'static,
     V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
-    pub fn open(path: &Path, block_cache: Option<Arc<crate::db::cache::BlockCache<K, V>>>) -> Result<Self> {
+    pub fn open(
+        path: &Path,
+        block_cache: Option<Arc<crate::db::cache::BlockCache<K, V>>>,
+    ) -> Result<Self> {
         let file = OpenOptions::new().read(true).open(path)?;
         let mut reader = BufReader::new(file);
         let file_len = reader.seek(SeekFrom::End(0))?;

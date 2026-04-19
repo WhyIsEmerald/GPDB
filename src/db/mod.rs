@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod compaction;
 pub mod database;
 pub mod inner;
@@ -6,11 +7,10 @@ pub mod manifest;
 pub mod memtable;
 pub mod sstable;
 pub mod wal;
-pub mod cache;
+pub use cache::*;
 pub use compaction::*;
 pub use database::*;
 pub use manifest::*;
 pub use memtable::*;
 pub use sstable::*;
 pub use wal::*;
-pub use cache::*;

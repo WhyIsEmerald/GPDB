@@ -1,6 +1,6 @@
 use crate::db::compaction::Compactor;
 use crate::db::inner::{DBInner, MANIFEST_FILE_NAME, WAL_FILE_NAME};
-use crate::{DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId, Wal};
+use crate::{BlockCache, DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId, Wal};
 use parking_lot::RwLock;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashSet;
@@ -36,6 +36,8 @@ where
     pub fn open(path: &Path, max_memtable_size: usize) -> Result<Self> {
         std::fs::create_dir_all(path)?;
 
+        let block_cache = Arc::new(BlockCache::new(32 * 1024 * 1024)); // 32MB default
+
         let manifest_path = path.join(MANIFEST_FILE_NAME);
         let manifest = if manifest_path.exists() {
             Manifest::open(manifest_path)?
@@ -68,7 +70,7 @@ where
                 levels.resize_with(level + 1, Vec::new);
             }
             let full_path = path.join(rel_path);
-            let sstable = SSTable::open(&full_path)?;
+            let sstable = SSTable::open(&full_path, Some(Arc::clone(&block_cache)))?;
             levels[level].push(sstable);
         }
 
@@ -111,6 +113,7 @@ where
             next_id,
             max_memtable_size,
             memtable_size: 0,
+            block_cache,
             compaction_tx: task_tx,
             compaction_rx: parking_lot::Mutex::new(result_rx),
             compacting_ids: HashSet::new(),

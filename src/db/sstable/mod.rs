@@ -27,8 +27,8 @@ pub const MAGIC_NUMBER: u64 = 0xDEADC0DEBEEFCAFF;
 #[derive(Debug)]
 pub struct SSTable<K, V>
 where
-    K: DBKey,
-    V: Serialize + DeserializeOwned,
+    K: DBKey + Send + Sync + 'static,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     path: PathBuf,
     reader: Arc<Mutex<BufReader<File>>>,
@@ -40,13 +40,14 @@ where
     filter_offset: u64,
     index_offset: u64,
     file_size: u64,
+    block_cache: Option<Arc<crate::db::cache::BlockCache<K, V>>>,
     _phantom: PhantomData<(K, V)>,
 }
 
 impl<K, V> Clone for SSTable<K, V>
 where
-    K: DBKey,
-    V: Serialize + DeserializeOwned,
+    K: DBKey + Send + Sync + 'static,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         Self {
@@ -60,6 +61,7 @@ where
             filter_offset: self.filter_offset,
             index_offset: self.index_offset,
             file_size: self.file_size,
+            block_cache: self.block_cache.as_ref().map(Arc::clone),
             _phantom: PhantomData,
         }
     }
@@ -67,10 +69,10 @@ where
 
 impl<K, V> SSTable<K, V>
 where
-    K: DBKey,
-    V: Serialize + DeserializeOwned,
+    K: DBKey + Send + Sync + 'static,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
-    pub fn open(path: &Path) -> Result<Self> {
+    pub fn open(path: &Path, block_cache: Option<Arc<crate::db::cache::BlockCache<K, V>>>) -> Result<Self> {
         let file = OpenOptions::new().read(true).open(path)?;
         let mut reader = BufReader::new(file);
         let file_len = reader.seek(SeekFrom::End(0))?;
@@ -145,6 +147,7 @@ where
             filter_offset,
             index_offset,
             file_size: file_len,
+            block_cache,
             _phantom: PhantomData,
         })
     }
@@ -164,14 +167,33 @@ where
             None => return Ok(None),
         };
 
-        let mut reader = self
-            .reader
-            .lock()
-            .map_err(|_| Error::Corruption("Lock poisoned".to_string()))?;
-        reader.seek(SeekFrom::Start(block_offset))?;
+        let block = if let Some(cache) = &self.block_cache {
+            if let Some(cached_block) = cache.get(self.id, block_offset) {
+                cached_block
+            } else {
+                let mut reader = self
+                    .reader
+                    .lock()
+                    .map_err(|_| Error::Corruption("Lock poisoned".to_string()))?;
+                reader.seek(SeekFrom::Start(block_offset))?;
 
-        let block: DataBlock<K, V> = read_record(&mut *reader)?
-            .ok_or_else(|| Error::Corruption("Data block is missing".to_string()))?;
+                let block: DataBlock<K, V> = read_record(&mut *reader)?
+                    .ok_or_else(|| Error::Corruption("Data block is missing".to_string()))?;
+                let arc_block = Arc::new(block);
+                cache.insert(self.id, block_offset, Arc::clone(&arc_block));
+                arc_block
+            }
+        } else {
+            let mut reader = self
+                .reader
+                .lock()
+                .map_err(|_| Error::Corruption("Lock poisoned".to_string()))?;
+            reader.seek(SeekFrom::Start(block_offset))?;
+
+            let block: DataBlock<K, V> = read_record(&mut *reader)?
+                .ok_or_else(|| Error::Corruption("Data block is missing".to_string()))?;
+            Arc::new(block)
+        };
 
         for entry in block.iter() {
             if &entry.key == key {
@@ -193,10 +215,16 @@ where
         s.finish()
     }
 
-    pub fn write_from_iter<I>(path: &Path, iter: I, id: SSTableId, level: usize) -> Result<Self>
+    pub fn write_from_iter<I>(
+        path: &Path,
+        iter: I,
+        id: SSTableId,
+        level: usize,
+        block_cache: Option<Arc<crate::db::cache::BlockCache<K, V>>>,
+    ) -> Result<Self>
     where
         K: DBKey,
-        V: Serialize + DeserializeOwned,
+        V: Serialize + DeserializeOwned + Send + Sync + 'static,
         I: Iterator<Item = Result<Entry<K, V>>>,
     {
         let file = OpenOptions::new().write(true).create_new(true).open(path)?;
@@ -285,13 +313,14 @@ where
 
         writer.flush()?;
 
-        Self::open(path)
+        Self::open(path, block_cache)
     }
 
     pub fn write_from_memtable(
         path: &Path,
         memtable: &MemTable<K, V>,
         id: SSTableId,
+        block_cache: Option<Arc<crate::db::cache::BlockCache<K, V>>>,
     ) -> Result<Self> {
         let iter = memtable.iter().map(|(k, v)| {
             Ok(Entry {
@@ -299,7 +328,11 @@ where
                 value: v.clone(),
             })
         });
-        Self::write_from_iter(path, iter, id, 0)
+        Self::write_from_iter(path, iter, id, 0, block_cache)
+    }
+
+    pub fn set_cache(&mut self, cache: Arc<crate::db::cache::BlockCache<K, V>>) {
+        self.block_cache = Some(cache);
     }
 
     pub fn filter(&self) -> &FilterVariant {

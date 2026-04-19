@@ -1,14 +1,16 @@
+use crate::db::cache::BlockCache;
 use crate::db::sstable::SSTableIterator;
 use crate::{DBKey, Entry, Result, SSTable, SSTableId};
 use serde::{Serialize, de::DeserializeOwned};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::{cmp::Ordering, collections::BinaryHeap, path::Path};
 
 /// A request sent to the background compaction thread.
 pub enum CompactionTask<K, V>
 where
-    K: DBKey,
-    V: Serialize + DeserializeOwned,
+    K: DBKey + Send + Sync + 'static,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     /// Merge the given SSTables into a new one.
     Compact {
@@ -20,6 +22,8 @@ where
         next_id: SSTableId,
         /// The level where the output SSTable will be placed.
         target_level: usize,
+        /// Block cache to associate with the new SSTable.
+        block_cache: Option<Arc<BlockCache<K, V>>>,
     },
     /// Tell the background thread to stop.
     Shutdown,
@@ -28,8 +32,8 @@ where
 /// The result of a background compaction task.
 pub enum CompactionResult<K, V>
 where
-    K: DBKey,
-    V: Serialize + DeserializeOwned,
+    K: DBKey + Send + Sync + 'static,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     /// Compaction finished successfully.
     Success {
@@ -75,8 +79,8 @@ impl<K: DBKey, V> Ord for MergeElement<K, V> {
 
 pub struct MergeStream<K, V>
 where
-    K: DBKey,
-    V: Serialize + DeserializeOwned,
+    K: DBKey + Send + Sync + 'static,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     heap: BinaryHeap<MergeElement<K, V>>,
     iters: Vec<SSTableIterator<K, V>>,
@@ -84,8 +88,8 @@ where
 
 impl<K, V> MergeStream<K, V>
 where
-    K: DBKey,
-    V: Serialize + DeserializeOwned,
+    K: DBKey + Send + Sync + 'static,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     /// Create a new MergeStream from a slice of SSTables.
     ///
@@ -113,8 +117,8 @@ where
 
 impl<K, V> Iterator for MergeStream<K, V>
 where
-    K: DBKey,
-    V: Serialize + DeserializeOwned,
+    K: DBKey + Send + Sync + 'static,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     type Item = Result<Entry<K, V>>;
 
@@ -175,8 +179,8 @@ impl Compactor {
         target_level: &[SSTable<K, V>],
     ) -> Vec<usize>
     where
-        K: DBKey,
-        V: Serialize + DeserializeOwned,
+        K: DBKey + Send + Sync + 'static,
+        V: Serialize + DeserializeOwned + Send + Sync + 'static,
     {
         let mut overlapping = Vec::new();
         for (idx, sst) in target_level.iter().enumerate() {
@@ -197,8 +201,8 @@ impl Compactor {
         target_level: &[SSTable<K, V>],
     ) -> Vec<usize>
     where
-        K: DBKey,
-        V: Serialize + DeserializeOwned,
+        K: DBKey + Send + Sync + 'static,
+        V: Serialize + DeserializeOwned + Send + Sync + 'static,
     {
         if sstables.is_empty() {
             return Vec::new();
@@ -226,14 +230,15 @@ impl Compactor {
         sstables: &[SSTable<K, V>],
         output_path: &Path,
         new_id: SSTableId,
+        block_cache: Option<Arc<BlockCache<K, V>>>,
     ) -> Result<SSTable<K, V>>
     where
-        K: DBKey,
-        V: Serialize + DeserializeOwned,
+        K: DBKey + Send + Sync + 'static,
+        V: Serialize + DeserializeOwned + Send + Sync + 'static,
     {
         let stream = MergeStream::new(sstables)?;
         let target_level = 1; // Default for compacting L0 to disk
-        SSTable::write_from_iter(output_path, stream, new_id, target_level)
+        SSTable::write_from_iter(output_path, stream, new_id, target_level, block_cache)
     }
 
     /// Merges a slice of L0 SSTables into a single new L1 SSTable.
@@ -242,12 +247,13 @@ impl Compactor {
         sstables: &[SSTable<K, V>],
         output_path: &Path,
         new_id: SSTableId,
+        block_cache: Option<Arc<BlockCache<K, V>>>,
     ) -> Result<SSTable<K, V>>
     where
-        K: DBKey,
-        V: Serialize + DeserializeOwned,
+        K: DBKey + Send + Sync + 'static,
+        V: Serialize + DeserializeOwned + Send + Sync + 'static,
     {
-        Self::compact(sstables, output_path, new_id)
+        Self::compact(sstables, output_path, new_id, block_cache)
     }
 
     /// The main entry point for the background worker thread.
@@ -259,8 +265,8 @@ impl Compactor {
         receiver: std::sync::mpsc::Receiver<CompactionTask<K, V>>,
         sender: std::sync::mpsc::Sender<CompactionResult<K, V>>,
     ) where
-        K: DBKey + Send + 'static,
-        V: Serialize + DeserializeOwned + Send + 'static,
+        K: DBKey + Send + Sync + 'static,
+        V: Serialize + DeserializeOwned + Send + Sync + 'static,
     {
         while let Ok(task) = receiver.recv() {
             match task {
@@ -269,8 +275,9 @@ impl Compactor {
                     output_path,
                     next_id,
                     target_level,
+                    block_cache,
                 } => {
-                    let result = Self::compact(&sstables, &output_path, next_id);
+                    let result = Self::compact(&sstables, &output_path, next_id, block_cache);
                     match result {
                         Ok(sstable) => {
                             sender

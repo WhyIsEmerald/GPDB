@@ -12,6 +12,7 @@ tempfile = "3.25.0"
 rand = "0.8.5"
 colored = "2.0"
 parking_lot = "0.12"
+moka = { version = "0.12", features = ["sync"] }
 xorf = { version = "0.11", features = ["serde"] }
 
 [dev-dependencies]

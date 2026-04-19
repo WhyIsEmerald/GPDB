@@ -16,7 +16,7 @@ fn tiered_xor_filters() {
     let l0_path = tmp_dir.path().join("L0.sst");
     let mut memtable = MemTable::new();
     memtable.put("k1".to_string(), Arc::new("v1".to_string()));
-    let sst_l0 = SSTable::write_from_memtable(&l0_path, &memtable, SSTableId(1)).unwrap();
+    let sst_l0 = SSTable::write_from_memtable(&l0_path, &memtable, SSTableId(1), None).unwrap();
     assert!(matches!(sst_l0.filter(), FilterVariant::Xor8(_)));
     assert!(sst_l0.get(&"k1".to_string()).unwrap().is_some());
 
@@ -28,13 +28,14 @@ fn tiered_xor_filters() {
             is_tombstone: false,
         },
     })];
-    let sst_l1 = SSTable::write_from_iter(&l1_path, entries.into_iter(), SSTableId(2), 1).unwrap();
+    let sst_l1 =
+        SSTable::write_from_iter(&l1_path, entries.into_iter(), SSTableId(2), 1, None).unwrap();
     assert!(matches!(sst_l1.filter(), FilterVariant::Xor16(_)));
     assert!(sst_l1.get(&"k2".to_string()).unwrap().is_some());
 }
 
 #[test]
-fn delta_encoding_correctness() {
+fn test_delta_encoding_correctness() {
     let (_tmp_dir, sstable_path) = setup();
     let mut memtable: MemTable<String, String> = MemTable::new();
 
@@ -42,8 +43,7 @@ fn delta_encoding_correctness() {
     memtable.put("user_id_00002".to_string(), Arc::new("val2".to_string()));
     memtable.put("user_id_00003".to_string(), Arc::new("val3".to_string()));
 
-    let sst = SSTable::write_from_memtable(&sstable_path, &memtable, SSTableId(1)).unwrap();
-
+    let sst = SSTable::write_from_memtable(&sstable_path, &memtable, SSTableId(1), None).unwrap();
     assert_eq!(
         sst.get(&"user_id_00001".to_string())
             .unwrap()

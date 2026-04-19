@@ -1,6 +1,7 @@
 use crate::db::compaction::{CompactionResult, CompactionTask};
 use crate::{
-    DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId, Wal, WriteBatch,
+    BlockCache, DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId,
+    Wal, WriteBatch,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashSet;
@@ -24,6 +25,7 @@ where
     pub(crate) next_id: SSTableId,
     pub(crate) max_memtable_size: usize,
     pub(crate) memtable_size: usize,
+    pub(crate) block_cache: Arc<BlockCache<K, V>>,
     pub(crate) compaction_tx: mpsc::Sender<CompactionTask<K, V>>,
     pub(crate) compaction_rx: parking_lot::Mutex<mpsc::Receiver<CompactionResult<K, V>>>,
     pub(crate) compacting_ids: HashSet<SSTableId>,
@@ -203,6 +205,7 @@ where
             output_path,
             next_id: id,
             target_level,
+            block_cache: Some(Arc::clone(&self.block_cache)),
         });
     }
 
@@ -212,7 +215,12 @@ where
         let filename = format!("L0-{}.sst", id);
         let path = self.path.join(&filename);
 
-        let new_sstable = SSTable::write_from_memtable(&path, &self.memtable, id)?;
+        let new_sstable = SSTable::write_from_memtable(
+            &path,
+            &self.memtable,
+            id,
+            Some(Arc::clone(&self.block_cache)),
+        )?;
 
         {
             let mut manifest = self.manifest.lock();
@@ -237,10 +245,11 @@ where
 
     fn apply_compaction_success(
         &mut self,
-        sstable: SSTable<K, V>,
+        mut sstable: SSTable<K, V>,
         level: usize,
         original_sstables: Vec<SSTable<K, V>>,
     ) -> Result<()> {
+        sstable.set_cache(Arc::clone(&self.block_cache));
         let removed_ids: HashSet<SSTableId> = original_sstables.iter().map(|s| s.id()).collect();
 
         {

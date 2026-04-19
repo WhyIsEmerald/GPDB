@@ -6,7 +6,6 @@ pub struct SSTableId(pub u64);
 
 impl std::fmt::Display for SSTableId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Pad to 20 digits
         write!(f, "{:020}", self.0)
     }
 }
@@ -15,7 +14,7 @@ pub const FILTER_TYPE_XOR8: u8 = 0;
 pub const FILTER_TYPE_XOR16: u8 = 1;
 
 pub const COMPRESSION_NONE: u8 = 0;
-pub const COMPRESSION_ZSTD: u8 = 1; // For future alpha releases
+pub const COMPRESSION_ZSTD: u8 = 1;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// Metadata for an SSTable, stored in the file.

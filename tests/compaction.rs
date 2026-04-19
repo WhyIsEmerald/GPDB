@@ -76,14 +76,14 @@ fn merge_stream_integration() {
     mem1.put("A".to_string(), Arc::new("v1-old".to_string()));
     mem1.put("C".to_string(), Arc::new("v1".to_string()));
     mem1.put("E".to_string(), Arc::new("v1".to_string()));
-    let sst1 = SSTable::write_from_memtable(&sst1_path, &mem1, SSTableId(1)).unwrap();
+    let sst1 = SSTable::write_from_memtable(&sst1_path, &mem1, SSTableId(1), None).unwrap();
 
     let sst2_path = tmp_dir.path().join("L0-2.sst");
     let mut mem2 = MemTable::new();
     mem2.put("A".to_string(), Arc::new("v2-new".to_string()));
     mem2.put("B".to_string(), Arc::new("v2".to_string()));
     mem2.put("D".to_string(), Arc::new("v2".to_string()));
-    let sst2 = SSTable::write_from_memtable(&sst2_path, &mem2, SSTableId(2)).unwrap();
+    let sst2 = SSTable::write_from_memtable(&sst2_path, &mem2, SSTableId(2), None).unwrap();
 
     let sstables = vec![sst1, sst2];
     let stream = MergeStream::new(&sstables).unwrap();
@@ -108,17 +108,17 @@ fn compactor_l0_to_disk() {
     let mut mem1 = MemTable::new();
     mem1.put("A".to_string(), Arc::new("old".to_string()));
     mem1.put("C".to_string(), Arc::new("val".to_string()));
-    let sst1 = SSTable::write_from_memtable(&path1, &mem1, SSTableId(1)).unwrap();
+    let sst1 = SSTable::write_from_memtable(&path1, &mem1, SSTableId(1), None).unwrap();
 
     let path2 = tmp_dir.path().join("L0-2.sst");
     let mut mem2 = MemTable::new();
     mem2.put("A".to_string(), Arc::new("new".to_string()));
     mem2.put("B".to_string(), Arc::new("val".to_string()));
-    let sst2 = SSTable::write_from_memtable(&path2, &mem2, SSTableId(2)).unwrap();
+    let sst2 = SSTable::write_from_memtable(&path2, &mem2, SSTableId(2), None).unwrap();
 
     let l1_path = tmp_dir.path().join("L1-5.sst");
-    let sst_l1 =
-        Compactor::compact_l0(&[sst1, sst2], &l1_path, SSTableId(5)).expect("Compaction failed");
+    let sst_l1 = Compactor::compact_l0(&[sst1, sst2], &l1_path, SSTableId(5), None)
+        .expect("Compaction failed");
 
     assert_eq!(sst_l1.id(), SSTableId(5));
     assert_eq!(sst_l1.len(), 3);

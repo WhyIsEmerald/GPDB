@@ -15,7 +15,7 @@ pub fn sstable_bench(c: &mut Criterion) {
         mem.put(format!("key-{:05}", i), Arc::new(format!("value-{}", i)));
     }
 
-    let sst = SSTable::write_from_memtable(&sstable_path, &mem, SSTableId(1)).unwrap();
+    let sst = SSTable::write_from_memtable(&sstable_path, &mem, SSTableId(1), None).unwrap();
 
     group.bench_function("get_hit", |b| {
         b.iter(|| {

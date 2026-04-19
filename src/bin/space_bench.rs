@@ -89,7 +89,7 @@ fn run_space_test(config: &SpaceTestConfig, tmp_dir: &TempDir) -> Result<(), Box
 
     let sstable_name = config.name.replace(' ', "_").to_lowercase() + ".sst";
     let sstable_path = path.join(&sstable_name);
-    SSTable::write_from_memtable(&sstable_path, &mem, SSTableId(1))?;
+    SSTable::write_from_memtable(&sstable_path, &mem, SSTableId(1), None)?;
 
     let metadata = fs::metadata(&sstable_path)?;
     let on_disk_bytes = metadata.len();

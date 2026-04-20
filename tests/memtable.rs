@@ -9,7 +9,7 @@ fn new_memtable() {
 
 #[test]
 fn put_get() {
-    let mut memtable: MemTable<String, String> = MemTable::new();
+    let memtable: MemTable<String, String> = MemTable::new();
 
     let key = "key".to_string();
     let arc_value = Arc::new("value".to_string());
@@ -20,7 +20,7 @@ fn put_get() {
 
 #[test]
 fn put_overwrite() {
-    let mut memtable: MemTable<String, String> = MemTable::new();
+    let memtable: MemTable<String, String> = MemTable::new();
 
     let key = "key".to_string();
     let arc_value1 = Arc::new("value1".to_string());
@@ -36,7 +36,7 @@ fn put_overwrite() {
 
 #[test]
 fn delete_value() {
-    let mut memtable: MemTable<String, String> = MemTable::new();
+    let memtable: MemTable<String, String> = MemTable::new();
 
     let key = "key".to_string();
     let arc_value = Arc::new("value".to_string());
@@ -51,7 +51,7 @@ fn delete_value() {
 
 #[test]
 fn clear_all() {
-    let mut memtable: MemTable<String, String> = MemTable::new();
+    let memtable: MemTable<String, String> = MemTable::new();
 
     let key1 = "key1".to_string();
     let arc_value1 = Arc::new("value1".to_string());
@@ -69,7 +69,7 @@ fn clear_all() {
 
 #[test]
 fn iter() {
-    let mut memtable: MemTable<String, String> = MemTable::new();
+    let memtable: MemTable<String, String> = MemTable::new();
 
     let key1 = "key1".to_string();
     let arc_value1 = Arc::new("value1".to_string());
@@ -82,13 +82,13 @@ fn iter() {
     let mut iter = memtable.iter();
 
     let (k, entry) = iter.next().expect("Iterator should have at least 1 item");
-    assert_eq!(k, &key1);
+    assert_eq!(k, key1);
     assert!(!entry.is_tombstone);
     let v1 = entry.value.as_ref().unwrap();
     assert_eq!(v1.as_str(), "value1");
 
     let (k, entry) = iter.next().expect("Iterator should have at least 2 items");
-    assert_eq!(k, &key2);
+    assert_eq!(k, key2);
     assert!(!entry.is_tombstone);
     let v2 = entry.value.as_ref().unwrap();
     assert_eq!(v2.as_str(), "value2");
@@ -97,7 +97,7 @@ fn iter() {
 
 #[test]
 fn iter_tombstone() {
-    let mut memtable: MemTable<String, String> = MemTable::new();
+    let memtable: MemTable<String, String> = MemTable::new();
 
     let key1 = "key1".to_string();
     let arc_value1 = Arc::new("value1".to_string());
@@ -112,12 +112,12 @@ fn iter_tombstone() {
     let mut iter = memtable.iter();
 
     let (k, entry) = iter.next().expect("Iterator should have at least 2 item");
-    assert_eq!(k, &key1);
+    assert_eq!(k, key1);
     assert!(entry.is_tombstone);
     assert!(entry.value.is_none());
 
     let (k, entry) = iter.next().expect("Iterator should have at least 2 item");
-    assert_eq!(k, &key2);
+    assert_eq!(k, key2);
     assert!(!entry.is_tombstone);
     assert_eq!(entry.value.as_ref().unwrap(), &arc_value2);
 

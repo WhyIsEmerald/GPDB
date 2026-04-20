@@ -125,7 +125,7 @@ where
             if entry.is_tombstone {
                 return Ok(None);
             }
-            return Ok(entry.value.clone());
+            return Ok(entry.value);
         }
 
         for level in &self.levels {

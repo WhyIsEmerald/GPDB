@@ -4,6 +4,7 @@ use crate::db::version::Version;
 use crate::{
     BlockCache, DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId, Wal,
 };
+use arc_swap::ArcSwap;
 use parking_lot::RwLock;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashSet;
@@ -15,8 +16,7 @@ use std::sync::mpsc;
 /// The public handle to the database.
 ///
 /// This struct is thread-safe and can be cheaply cloned to share the
-/// database instance across multiple threads. It uses an internal
-/// RwLock to allow multiple concurrent readers.
+/// database instance across multiple threads.
 #[derive(Debug, Clone)]
 pub struct DB<K, V>
 where
@@ -24,6 +24,7 @@ where
     V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
 {
     inner: Arc<RwLock<DBInner<K, V>>>,
+    version: Arc<ArcSwap<Version<K, V>>>,
 }
 
 impl<K, V> DB<K, V>
@@ -109,12 +110,15 @@ where
             Compactor::run_worker::<K, V>(task_rx, result_tx);
         });
 
+        let db_version = Arc::new(ArcSwap::from(current_version.clone()));
+
         let inner = DBInner {
             path: path.to_path_buf(),
             memtable,
             wal,
             manifest: parking_lot::Mutex::new(manifest),
             current_version,
+            db_version: Arc::clone(&db_version),
             next_id,
             max_memtable_size,
             memtable_size: 0,
@@ -126,6 +130,7 @@ where
 
         Ok(DB {
             inner: Arc::new(RwLock::new(inner)),
+            version: db_version,
         })
     }
 
@@ -160,7 +165,26 @@ where
     /// * `key` - The key to look up.
     pub fn get(&self, key: &K) -> Result<Option<Arc<V>>> {
         let inner = self.inner.read();
-        inner.get(key)
+
+        if let Some(entry) = inner.memtable.get_entry(key) {
+            if entry.is_tombstone {
+                return Ok(None);
+            }
+            return Ok(entry.value);
+        }
+
+        let version = self.version.load();
+        for level in &version.levels {
+            for sstable in level.iter().rev() {
+                if let Some(val_entry) = sstable.get(key)? {
+                    if val_entry.is_tombstone {
+                        return Ok(None);
+                    }
+                    return Ok(val_entry.value);
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Checks for finished background compactions and applies them.

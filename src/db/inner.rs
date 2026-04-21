@@ -4,6 +4,7 @@ use crate::{
     BlockCache, DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId,
     Wal, WriteBatch,
 };
+use arc_swap::ArcSwap;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -23,6 +24,7 @@ where
     pub(crate) wal: Wal<K, V>,
     pub(crate) manifest: parking_lot::Mutex<Manifest>,
     pub(crate) current_version: Arc<Version<K, V>>,
+    pub(crate) db_version: Arc<ArcSwap<Version<K, V>>>,
     pub(crate) next_id: SSTableId,
     pub(crate) max_memtable_size: usize,
     pub(crate) memtable_size: usize,
@@ -121,27 +123,6 @@ where
         Ok(())
     }
 
-    pub fn get(&self, key: &K) -> Result<Option<Arc<V>>> {
-        if let Some(entry) = self.memtable.get_entry(key) {
-            if entry.is_tombstone {
-                return Ok(None);
-            }
-            return Ok(entry.value);
-        }
-
-        for level in &self.current_version.levels {
-            for sstable in level.iter().rev() {
-                if let Some(val_entry) = sstable.get(key)? {
-                    if val_entry.is_tombstone {
-                        return Ok(None);
-                    }
-                    return Ok(val_entry.value);
-                }
-            }
-        }
-        Ok(None)
-    }
-
     pub fn handle_compaction_results(&mut self) -> Result<()> {
         let mut results = Vec::new();
         {
@@ -238,6 +219,7 @@ where
         new_levels[0].push(new_sstable);
         new_levels[0].sort_by_key(|sst| sst.id());
         self.current_version = Arc::new(Version::new(new_levels));
+        self.db_version.store(Arc::clone(&self.current_version));
 
         self.memtable.clear();
         self.memtable_size = 0;
@@ -301,6 +283,7 @@ where
         new_levels[level].sort_by_key(|s| s.id());
 
         self.current_version = Arc::new(Version::new(new_levels));
+        self.db_version.store(Arc::clone(&self.current_version));
 
         Ok(())
     }

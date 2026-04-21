@@ -121,7 +121,7 @@ where
             db_version: Arc::clone(&db_version),
             next_id,
             max_memtable_size,
-            memtable_size: 0,
+            memtable_size: std::sync::atomic::AtomicUsize::new(0),
             block_cache,
             compaction_tx: task_tx,
             compaction_rx: parking_lot::Mutex::new(result_rx),

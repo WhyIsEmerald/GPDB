@@ -9,6 +9,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 
 pub(crate) const MANIFEST_FILE_NAME: &str = "MANIFEST";
@@ -27,7 +28,7 @@ where
     pub(crate) db_version: Arc<ArcSwap<Version<K, V>>>,
     pub(crate) next_id: SSTableId,
     pub(crate) max_memtable_size: usize,
-    pub(crate) memtable_size: usize,
+    pub(crate) memtable_size: AtomicUsize,
     pub(crate) block_cache: Arc<BlockCache<K, V>>,
     pub(crate) compaction_tx: mpsc::Sender<CompactionTask<K, V>>,
     pub(crate) compaction_rx: parking_lot::Mutex<mpsc::Receiver<CompactionResult<K, V>>>,
@@ -115,8 +116,9 @@ where
             };
         }
 
-        self.memtable_size += total_batch_size;
-        if self.memtable_size >= self.max_memtable_size {
+        self.memtable_size
+            .fetch_add(total_batch_size, Ordering::Relaxed);
+        if self.memtable_size.load(Ordering::Relaxed) >= self.max_memtable_size {
             self.flush_memtable()?;
         }
 
@@ -222,7 +224,7 @@ where
         self.db_version.store(Arc::clone(&self.current_version));
 
         self.memtable.clear();
-        self.memtable_size = 0;
+        self.memtable_size.store(0, Ordering::Relaxed);
         self.wal.clear()?;
 
         self.check_all_compactions();

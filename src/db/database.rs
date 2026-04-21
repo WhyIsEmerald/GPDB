@@ -1,5 +1,6 @@
 use crate::db::compaction::Compactor;
 use crate::db::inner::{DBInner, MANIFEST_FILE_NAME, WAL_FILE_NAME};
+use crate::db::version::Version;
 use crate::{
     BlockCache, DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId, Wal,
 };
@@ -80,6 +81,8 @@ where
             level_sstables.sort_by_key(|sst| sst.id());
         }
 
+        let current_version = Arc::new(Version::new(levels));
+
         let wal_path = path.join(WAL_FILE_NAME);
         let memtable = MemTable::new();
         let wal: Wal<K, V>;
@@ -111,7 +114,7 @@ where
             memtable,
             wal,
             manifest: parking_lot::Mutex::new(manifest),
-            levels,
+            current_version,
             next_id,
             max_memtable_size,
             memtable_size: 0,

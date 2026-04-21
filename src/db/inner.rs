@@ -1,4 +1,5 @@
 use crate::db::compaction::{CompactionResult, CompactionTask};
+use crate::db::version::Version;
 use crate::{
     BlockCache, DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId,
     Wal, WriteBatch,
@@ -21,7 +22,7 @@ where
     pub(crate) memtable: MemTable<K, V>,
     pub(crate) wal: Wal<K, V>,
     pub(crate) manifest: parking_lot::Mutex<Manifest>,
-    pub(crate) levels: Vec<Vec<SSTable<K, V>>>,
+    pub(crate) current_version: Arc<Version<K, V>>,
     pub(crate) next_id: SSTableId,
     pub(crate) max_memtable_size: usize,
     pub(crate) memtable_size: usize,
@@ -39,7 +40,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DBInner")
             .field("path", &self.path)
-            .field("levels_count", &self.levels.len())
+            .field("levels_count", &self.current_version.levels.len())
             .field("next_id", &self.next_id)
             .finish()
     }
@@ -57,7 +58,7 @@ where
 
     /// Returns the total number of SSTables across all levels.
     pub fn total_sst_count(&self) -> usize {
-        self.levels.iter().map(|l| l.len()).sum()
+        self.current_version.levels.iter().map(|l| l.len()).sum()
     }
 
     pub fn put(&mut self, key: K, value: V) -> Result<()> {
@@ -128,7 +129,7 @@ where
             return Ok(entry.value);
         }
 
-        for level in &self.levels {
+        for level in &self.current_version.levels {
             for sstable in level.iter().rev() {
                 if let Some(val_entry) = sstable.get(key)? {
                     if val_entry.is_tombstone {
@@ -171,22 +172,22 @@ where
 
     /// Scans all levels and triggers any needed compaction tasks.
     fn check_all_compactions(&mut self) {
-        for level in 0..self.levels.len() {
+        for level in 0..self.current_version.levels.len() {
             self.maybe_trigger_compaction(level);
         }
     }
 
     fn maybe_trigger_compaction(&mut self, level: usize) {
         let threshold = 4;
-        if self.levels[level].len() < threshold {
+        if self.current_version.levels[level].len() < threshold {
             return;
         }
 
-        let any_compacting = self.levels[level]
+        let any_compacting = self.current_version.levels[level]
             .iter()
             .any(|s| self.compacting_ids.contains(&s.id()));
         if !any_compacting {
-            let sstables = self.levels[level].clone();
+            let sstables = self.current_version.levels[level].clone();
             self.trigger_compaction(sstables, level + 1);
         }
     }
@@ -232,8 +233,11 @@ where
             manifest.flush()?;
         }
 
-        self.levels[0].push(new_sstable);
-        self.levels[0].sort_by_key(|sst| sst.id());
+        // Create a new Version
+        let mut new_levels = self.current_version.levels.clone();
+        new_levels[0].push(new_sstable);
+        new_levels[0].sort_by_key(|sst| sst.id());
+        self.current_version = Arc::new(Version::new(new_levels));
 
         self.memtable.clear();
         self.memtable_size = 0;
@@ -252,13 +256,16 @@ where
         sstable.set_cache(Arc::clone(&self.block_cache));
         let removed_ids: HashSet<SSTableId> = original_sstables.iter().map(|s| s.id()).collect();
 
+        // New levels for the new Version
+        let mut new_levels = self.current_version.levels.clone();
+
         {
             let mut manifest = self.manifest.lock();
             for sst in &original_sstables {
                 self.compacting_ids.remove(&sst.id());
 
                 let mut source_level = 0;
-                for (l_idx, level_vec) in self.levels.iter().enumerate() {
+                for (l_idx, level_vec) in new_levels.iter().enumerate() {
                     if level_vec.iter().any(|s| s.id() == sst.id()) {
                         source_level = l_idx;
                         break;
@@ -283,15 +290,17 @@ where
             manifest.flush()?;
         }
 
-        for l in 0..self.levels.len() {
-            self.levels[l].retain(|s| !removed_ids.contains(&s.id()));
+        for l in 0..new_levels.len() {
+            new_levels[l].retain(|s| !removed_ids.contains(&s.id()));
         }
 
-        if level >= self.levels.len() {
-            self.levels.resize_with(level + 1, Vec::new);
+        if level >= new_levels.len() {
+            new_levels.resize_with(level + 1, Vec::new);
         }
-        self.levels[level].push(sstable);
-        self.levels[level].sort_by_key(|s| s.id());
+        new_levels[level].push(sstable);
+        new_levels[level].sort_by_key(|s| s.id());
+
+        self.current_version = Arc::new(Version::new(new_levels));
 
         Ok(())
     }

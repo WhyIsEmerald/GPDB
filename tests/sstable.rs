@@ -14,7 +14,7 @@ fn tiered_xor_filters() {
     let (tmp_dir, _) = setup();
 
     let l0_path = tmp_dir.path().join("L0.sst");
-    let mut memtable = MemTable::new();
+    let memtable = MemTable::new();
     memtable.put("k1".to_string(), Arc::new("v1".to_string()));
     let sst_l0 = SSTable::write_from_memtable(&l0_path, &memtable, SSTableId(1), None).unwrap();
     assert!(matches!(sst_l0.filter(), FilterVariant::Xor8(_)));
@@ -37,7 +37,7 @@ fn tiered_xor_filters() {
 #[test]
 fn test_delta_encoding_correctness() {
     let (_tmp_dir, sstable_path) = setup();
-    let mut memtable: MemTable<String, String> = MemTable::new();
+    let memtable: MemTable<String, String> = MemTable::new();
 
     memtable.put("user_id_00001".to_string(), Arc::new("val1".to_string()));
     memtable.put("user_id_00002".to_string(), Arc::new("val2".to_string()));

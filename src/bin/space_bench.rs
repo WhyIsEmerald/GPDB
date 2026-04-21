@@ -76,7 +76,7 @@ fn run_space_test(config: &SpaceTestConfig, tmp_dir: &TempDir) -> Result<(), Box
     );
 
     let path = tmp_dir.path();
-    let mut mem = MemTable::new();
+    let mem = MemTable::new();
     let val = Arc::new("v".repeat(config.value_length));
     let mut total_raw_bytes: u64 = 0;
 

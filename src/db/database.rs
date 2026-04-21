@@ -81,7 +81,7 @@ where
         }
 
         let wal_path = path.join(WAL_FILE_NAME);
-        let mut memtable = MemTable::new();
+        let memtable = MemTable::new();
         let wal: Wal<K, V>;
 
         if wal_path.exists() {

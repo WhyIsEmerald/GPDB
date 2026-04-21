@@ -1,81 +1,87 @@
 use crate::{DBKey, ValueEntry};
-use std::collections::{BTreeMap, HashMap};
+use crossbeam_skiplist::SkipMap;
 use std::sync::Arc;
 
-/// A simple in-memory key-value store, acting as the write-back cache.
-///
-/// Keys `K` must implement `DBKey` for hashing, ordering, cloning, and serialization.
-/// Values `V` are stored behind an Arc to avoid expensive clones.
+/// A lock-free concurrent MemTable using a SkipList.
+/// High throughput for multi-threaded writes without mutex contention.
 #[derive(Debug)]
 pub struct MemTable<K, V>
 where
     K: DBKey,
 {
-    b_tree_map: BTreeMap<K, ValueEntry<V>>,
-    hash_map: HashMap<K, ValueEntry<V>>,
+    map: SkipMap<K, ValueEntry<V>>,
 }
 
 impl<K, V> MemTable<K, V>
 where
-    K: DBKey,
+    K: DBKey + Send + Sync + 'static,
+    V: Send + Sync + 'static,
 {
-    /// Creates a new, empty `MemTable`.
     pub fn new() -> Self {
-        MemTable {
-            hash_map: HashMap::new(),
-            b_tree_map: BTreeMap::new(),
+        Self {
+            map: SkipMap::new(),
         }
     }
 
-    /// Inserts/Updates a key-value pair. The value is an Arc to avoid expensive clones.
-    pub fn put(&mut self, key: K, value: Arc<V>) -> Option<ValueEntry<V>> {
+    pub fn put(&self, key: K, value: Arc<V>) {
         let entry = ValueEntry {
             value: Some(value),
             is_tombstone: false,
         };
-        self.hash_map.insert(key.clone(), entry.clone());
-        self.b_tree_map.insert(key, entry)
+        self.map.insert(key, entry);
     }
 
-    /// Marks a key as deleted by inserting a tombstone.
-    pub fn delete(&mut self, key: K) -> Option<ValueEntry<V>> {
+    pub fn delete(&self, key: K) {
         let entry = ValueEntry {
             value: None,
             is_tombstone: true,
         };
-        self.hash_map.insert(key.clone(), entry.clone());
-        self.b_tree_map.insert(key, entry)
+        self.map.insert(key, entry);
     }
 
-    /// Retrieves a shared pointer (`Arc`) to the value associated with a key.
     pub fn get(&self, key: &K) -> Option<Arc<V>> {
-        self.hash_map
+        self.map
             .get(key)
-            .filter(|entry| !entry.is_tombstone)
-            .and_then(|entry| entry.value.clone())
+            .filter(|entry| !entry.value().is_tombstone)
+            .and_then(|entry| entry.value().value.clone())
     }
 
-    /// Returns the full ValueEntry (including tombstone status) if the key exists.
-    pub fn get_entry(&self, key: &K) -> Option<&ValueEntry<V>> {
-        self.hash_map.get(key)
+    pub fn get_entry(&self, key: &K) -> Option<ValueEntry<V>> {
+        self.map.get(key).map(|entry| entry.value().clone())
     }
 
-    /// Returns the number of non-tombstone key-value pairs in the `MemTable`.
     pub fn len(&self) -> usize {
-        self.hash_map
+        self.map
             .iter()
-            .filter(|(_, entry)| !entry.is_tombstone)
+            .filter(|entry| !entry.value().is_tombstone)
             .count()
     }
 
-    /// Clears the `MemTable` by removing all key-value pairs.
-    pub fn clear(&mut self) {
-        self.hash_map.clear();
-        self.b_tree_map.clear();
+    pub fn clear(&self) {
+        self.map.clear();
     }
 
-    /// Returns an iterator over the sorted key-value entries in the MemTable.
-    pub fn iter(&self) -> std::collections::btree_map::Iter<'_, K, ValueEntry<V>> {
-        self.b_tree_map.iter()
+    /// Returns a lock-free sorted iterator over the MemTable.
+    pub fn iter(&self) -> SkipMapIterator<'_, K, V> {
+        SkipMapIterator {
+            iter: self.map.iter(),
+        }
+    }
+}
+
+pub struct SkipMapIterator<'a, K, V> {
+    iter: crossbeam_skiplist::map::Iter<'a, K, ValueEntry<V>>,
+}
+
+impl<'a, K, V> Iterator for SkipMapIterator<'a, K, V>
+where
+    K: DBKey + Send + Sync + 'static,
+    V: Send + Sync + 'static,
+{
+    type Item = (K, ValueEntry<V>);
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter
+            .next()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
     }
 }

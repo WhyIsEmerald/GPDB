@@ -72,14 +72,14 @@ fn merge_stream_integration() {
     let tmp_dir = TempDir::new().unwrap();
 
     let sst1_path = tmp_dir.path().join("L0-1.sst");
-    let mut mem1 = MemTable::new();
+    let mem1 = MemTable::new();
     mem1.put("A".to_string(), Arc::new("v1-old".to_string()));
     mem1.put("C".to_string(), Arc::new("v1".to_string()));
     mem1.put("E".to_string(), Arc::new("v1".to_string()));
     let sst1 = SSTable::write_from_memtable(&sst1_path, &mem1, SSTableId(1), None).unwrap();
 
     let sst2_path = tmp_dir.path().join("L0-2.sst");
-    let mut mem2 = MemTable::new();
+    let mem2 = MemTable::new();
     mem2.put("A".to_string(), Arc::new("v2-new".to_string()));
     mem2.put("B".to_string(), Arc::new("v2".to_string()));
     mem2.put("D".to_string(), Arc::new("v2".to_string()));
@@ -105,13 +105,13 @@ fn compactor_l0_to_disk() {
     let tmp_dir = TempDir::new().unwrap();
 
     let path1 = tmp_dir.path().join("L0-1.sst");
-    let mut mem1 = MemTable::new();
+    let mem1 = MemTable::new();
     mem1.put("A".to_string(), Arc::new("old".to_string()));
     mem1.put("C".to_string(), Arc::new("val".to_string()));
     let sst1 = SSTable::write_from_memtable(&path1, &mem1, SSTableId(1), None).unwrap();
 
     let path2 = tmp_dir.path().join("L0-2.sst");
-    let mut mem2 = MemTable::new();
+    let mem2 = MemTable::new();
     mem2.put("A".to_string(), Arc::new("new".to_string()));
     mem2.put("B".to_string(), Arc::new("val".to_string()));
     let sst2 = SSTable::write_from_memtable(&path2, &mem2, SSTableId(2), None).unwrap();

@@ -1,7 +1,6 @@
 pub mod cache;
 pub mod compaction;
 pub mod database;
-pub mod inner;
 pub mod io;
 pub mod manifest;
 pub mod memtable;

@@ -1,4 +1,5 @@
 Phase                        |          Ops |  Speed (ops/s) |   Mean μs |    p50 μs |    p95 μs |    p99 μs |   SSTs | Accuracy(%) | ReadImp(%) |        Δμs
+<<<<<<< refactor/modular-folders
 Bulk Ingestion               |      200_000 |        349_118 |       2.9 |         - |         - |         - |      1 |      100.0 |          - |          -
 Random Overwrites            |       50_000 |        300_978 |       3.3 |         - |         - |         - |      1 |      100.0 |          - |          -
 Random Read (Dirty)          |       50_000 |        125_126 |       5.9 |       5.0 |      15.0 |      20.0 |      1 |      100.0 |     -10.57 |      -0.63
@@ -6,3 +7,12 @@ Multi-Threaded Ingest        |      200_000 |        411_098 |       2.4 |      
 Random Deletions             |       25_000 |        398_859 |       2.5 |         - |         - |         - |      2 |      100.0 |          - |          -
 Compaction Wait              |            1 |        682_128 |       1.5 |         - |         - |         - |      2 |      100.0 |          - |          -
 Random Read (Cleaned)        |       50_000 |        115_616 |       6.6 |       3.0 |      16.0 |      32.0 |      2 |      100.0 |     -10.57 |      -0.63
+=======
+Bulk Ingestion               |      200_000 |        355_592 |       2.8 |         - |         - |         - |      1 |      100.0 |          - |          -
+Random Overwrites            |       50_000 |        196_328 |       5.1 |         - |         - |         - |      1 |      100.0 |          - |          -
+Random Read (Dirty)          |       50_000 |        115_442 |       6.6 |       5.0 |      18.0 |      25.0 |      1 |      100.0 |      -3.17 |      -0.21
+Multi-Threaded Ingest        |      200_000 |        160_864 |       6.2 |         - |         - |         - |      2 |      100.0 |          - |          -
+Random Deletions             |       25_000 |        373_539 |       2.7 |         - |         - |         - |      2 |      100.0 |          - |          -
+Compaction Wait              |            1 |        715_820 |       1.4 |         - |         - |         - |      2 |      100.0 |          - |          -
+Random Read (Cleaned)        |       50_000 |        111_547 |       6.8 |       3.0 |      17.0 |      39.0 |      2 |      100.0 |      -3.17 |      -0.21
+>>>>>>> main

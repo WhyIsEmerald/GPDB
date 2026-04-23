@@ -5,13 +5,14 @@ pub mod io;
 pub mod manifest;
 pub mod memtable;
 pub mod sstable;
-pub mod version;
 pub mod wal;
-pub use cache::*;
+
+pub use cache::BlockCache;
+pub use compaction::stream::*;
 pub use compaction::*;
 pub use database::*;
 pub use manifest::*;
 pub use memtable::*;
+pub use sstable::filter::FilterVariant;
 pub use sstable::*;
-pub use version::*;
 pub use wal::*;

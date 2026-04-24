@@ -12,14 +12,14 @@ impl<T> DBKey for T where T: Eq + Hash + Ord + Clone + Serialize + DeserializeOw
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 /// A full key-value pair as stored in an SSTable data block or returned by iterators.
 pub struct Entry<K, V> {
-    pub key: K,
+    pub key: Arc<K>,
     pub value: ValueEntry<V>,
 }
 
 impl<K: Clone, V> Clone for Entry<K, V> {
     fn clone(&self) -> Self {
         Self {
-            key: self.key.clone(),
+            key: Arc::clone(&self.key),
             value: self.value.clone(),
         }
     }
@@ -27,15 +27,15 @@ impl<K: Clone, V> Clone for Entry<K, V> {
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum LogEntry<K, V> {
-    Put(K, Arc<V>),
-    Delete(K),
+    Put(Arc<K>, Arc<V>),
+    Delete(Arc<K>),
 }
 
 impl<K: Clone, V> Clone for LogEntry<K, V> {
     fn clone(&self) -> Self {
         match self {
-            Self::Put(k, v) => Self::Put(k.clone(), Arc::clone(v)),
-            Self::Delete(k) => Self::Delete(k.clone()),
+            Self::Put(k, v) => Self::Put(Arc::clone(k), Arc::clone(v)),
+            Self::Delete(k) => Self::Delete(Arc::clone(k)),
         }
     }
 }
@@ -57,7 +57,7 @@ pub struct ValueEntry<V> {
 impl<V> Clone for ValueEntry<V> {
     fn clone(&self) -> Self {
         Self {
-            value: self.value.clone(),
+            value: self.value.as_ref().map(Arc::clone),
             is_tombstone: self.is_tombstone,
         }
     }

@@ -31,7 +31,7 @@ where
 {
     pub(crate) path: PathBuf,
     pub(crate) reader: Arc<Mutex<BufReader<File>>>,
-    pub(crate) index: BTreeMap<K, u64>,
+    pub(crate) index: BTreeMap<Arc<K>, u64>,
     pub(crate) meta: TableMeta<K>,
     pub(crate) filter: FilterVariant,
     pub(crate) id: SSTableId,

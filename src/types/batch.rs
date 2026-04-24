@@ -27,7 +27,7 @@ where
     /// Adds a put operation to the batch.
     pub fn put(&mut self, key: K, value: V) {
         self.entries.push(Entry {
-            key,
+            key: Arc::new(key),
             value: ValueEntry {
                 value: Some(Arc::new(value)),
                 is_tombstone: false,
@@ -38,7 +38,7 @@ where
     /// Adds a delete operation to the batch.
     pub fn delete(&mut self, key: K) {
         self.entries.push(Entry {
-            key,
+            key: Arc::new(key),
             value: ValueEntry {
                 value: None,
                 is_tombstone: true,

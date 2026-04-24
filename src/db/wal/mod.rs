@@ -6,6 +6,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// `Wal` provides a durable, write-ahead log.
 #[derive(Debug)]
@@ -39,7 +40,7 @@ where
     }
 
     pub fn open(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new().append(true).open(path)?;
+        let file = OpenOptions::new().write(true).append(true).open(path)?;
 
         Ok(Wal {
             path: path.to_path_buf(),
@@ -53,10 +54,6 @@ where
             write_record(&mut self.writer, entry)?;
         }
         Ok(())
-    }
-
-    pub fn append(&mut self, entry: &LogEntry<K, V>) -> Result<()> {
-        self.append_batch(std::slice::from_ref(entry))
     }
 
     pub fn clear(&mut self) -> Result<()> {
@@ -108,7 +105,7 @@ where
 
 enum WalTask<K, V> {
     Write {
-        entries: Vec<LogEntry<K, V>>,
+        entries: Arc<Vec<LogEntry<K, V>>>,
         resp_tx: Sender<Result<()>>,
     },
     Clear {
@@ -138,41 +135,29 @@ where
             while let Ok(first_task) = task_rx.recv() {
                 match first_task {
                     WalTask::Write { entries, resp_tx } => {
-                        let mut batch_entries = entries;
-                        let mut resps = vec![resp_tx];
+                        let mut batch_resps = vec![resp_tx];
                         let mut clear_task = None;
+
+                        // Start batch by appending first request
+                        let _ = wal.append_batch(&entries);
 
                         // Group multiple writes
                         while let Ok(next_task) = task_rx.try_recv() {
                             match next_task {
-                                WalTask::Write {
-                                    entries: next_entries,
-                                    resp_tx: next_resp,
-                                } => {
-                                    batch_entries.extend(next_entries);
-                                    resps.push(next_resp);
+                                WalTask::Write { entries: next_entries, resp_tx: next_resp } => {
+                                    let _ = wal.append_batch(&next_entries);
+                                    batch_resps.push(next_resp);
                                 }
-                                WalTask::Clear {
-                                    resp_tx: clear_resp,
-                                } => {
+                                WalTask::Clear { resp_tx: clear_resp } => {
                                     clear_task = Some(clear_resp);
-                                    break; // Stop batching, need to clear
+                                    break;
                                 }
                             }
-                            if resps.len() >= 1024 {
-                                break;
-                            }
+                            if batch_resps.len() >= 1024 { break; }
                         }
 
-                        let result = if !batch_entries.is_empty() {
-                            wal.append_batch(&batch_entries).and_then(|_| wal.flush())
-                        } else {
-                            Ok(())
-                        };
-
-                        for r in resps {
-                            let _ = r.send(result.clone());
-                        }
+                        let result = wal.flush();
+                        for r in batch_resps { let _ = r.send(result.clone()); }
 
                         if let Some(resp) = clear_task {
                             let r = wal.clear();
@@ -190,7 +175,7 @@ where
         Self { task_tx }
     }
 
-    pub fn submit(&self, entries: Vec<LogEntry<K, V>>) -> Result<()> {
+    pub fn submit(&self, entries: Arc<Vec<LogEntry<K, V>>>) -> Result<()> {
         let (resp_tx, resp_rx) = unbounded();
         self.task_tx
             .send(WalTask::Write { entries, resp_tx })

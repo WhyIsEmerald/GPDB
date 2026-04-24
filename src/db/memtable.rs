@@ -9,7 +9,7 @@ pub struct MemTable<K, V>
 where
     K: DBKey,
 {
-    map: SkipMap<K, ValueEntry<V>>,
+    map: SkipMap<Arc<K>, ValueEntry<V>>,
 }
 
 impl<K, V> MemTable<K, V>
@@ -23,7 +23,7 @@ where
         }
     }
 
-    pub fn put(&self, key: K, value: Arc<V>) {
+    pub fn put(&self, key: Arc<K>, value: Arc<V>) {
         let entry = ValueEntry {
             value: Some(value),
             is_tombstone: false,
@@ -31,7 +31,7 @@ where
         self.map.insert(key, entry);
     }
 
-    pub fn delete(&self, key: K) {
+    pub fn delete(&self, key: Arc<K>) {
         let entry = ValueEntry {
             value: None,
             is_tombstone: true,
@@ -39,14 +39,14 @@ where
         self.map.insert(key, entry);
     }
 
-    pub fn get(&self, key: &K) -> Option<Arc<V>> {
+    pub fn get(&self, key: &Arc<K>) -> Option<Arc<V>> {
         self.map
             .get(key)
             .filter(|entry| !entry.value().is_tombstone)
             .and_then(|entry| entry.value().value.clone())
     }
 
-    pub fn get_entry(&self, key: &K) -> Option<ValueEntry<V>> {
+    pub fn get_entry(&self, key: &Arc<K>) -> Option<ValueEntry<V>> {
         self.map.get(key).map(|entry| entry.value().clone())
     }
 
@@ -70,7 +70,7 @@ where
 }
 
 pub struct SkipMapIterator<'a, K, V> {
-    iter: crossbeam_skiplist::map::Iter<'a, K, ValueEntry<V>>,
+    iter: crossbeam_skiplist::map::Iter<'a, Arc<K>, ValueEntry<V>>,
 }
 
 impl<'a, K, V> Iterator for SkipMapIterator<'a, K, V>
@@ -78,10 +78,10 @@ where
     K: DBKey + Send + Sync + 'static,
     V: Send + Sync + 'static,
 {
-    type Item = (K, ValueEntry<V>);
+    type Item = (Arc<K>, ValueEntry<V>);
     fn next(&mut self) -> Option<Self::Item> {
         self.iter
             .next()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .map(|entry| (Arc::clone(entry.key()), entry.value().clone()))
     }
 }

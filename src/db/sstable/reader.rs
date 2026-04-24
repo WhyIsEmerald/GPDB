@@ -82,9 +82,10 @@ where
         };
 
         reader.seek(SeekFrom::Start(index_offset))?;
-        let index: BTreeMap<K, u64> = read_record(&mut reader)?.ok_or_else(|| {
+        let index_raw: BTreeMap<K, u64> = read_record(&mut reader)?.ok_or_else(|| {
             Error::Corruption("SSTable index block is missing or empty".to_string())
         })?;
+        let index = index_raw.into_iter().map(|(k, v)| (Arc::new(k), v)).collect();
 
         Ok(SSTable {
             path: path.to_path_buf(),

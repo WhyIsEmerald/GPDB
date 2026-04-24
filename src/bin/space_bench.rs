@@ -84,7 +84,7 @@ fn run_space_test(config: &SpaceTestConfig, tmp_dir: &TempDir) -> Result<(), Box
         let key = generate_key(config, i);
         total_raw_bytes =
             total_raw_bytes.saturating_add(key.len() as u64 + config.value_length as u64);
-        mem.put(key, val.clone());
+        mem.put(Arc::new(key), val.clone());
     }
 
     let sstable_name = config.name.replace(' ', "_").to_lowercase() + ".sst";

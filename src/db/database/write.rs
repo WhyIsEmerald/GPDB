@@ -2,6 +2,7 @@ use crate::db::database::DB;
 use crate::{DBKey, LogEntry, Result, WriteBatch};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 impl<K, V> DB<K, V>
@@ -30,7 +31,7 @@ where
         let mut log_entries = Vec::with_capacity(batch.entries.len());
         let mut total_batch_size = 0;
         for entry in batch.entries {
-            let key_size = std::mem::size_of_val(&entry.key);
+            let key_size = std::mem::size_of_val(&*entry.key);
             let val_size = entry
                 .value
                 .value
@@ -38,25 +39,26 @@ where
                 .map_or(0, |v| std::mem::size_of_val(&**v));
             total_batch_size += key_size + val_size;
             let log_entry = if entry.value.is_tombstone {
-                LogEntry::Delete(entry.key.clone())
+                LogEntry::Delete(entry.key)
             } else {
                 LogEntry::Put(
-                    entry.key.clone(),
-                    entry.value.value.clone().expect("Value missing"),
+                    entry.key,
+                    entry.value.value.expect("Value missing"),
                 )
             };
             log_entries.push(log_entry);
         }
 
-        {
-            self.wal.submit(log_entries.clone())?;
-        }
+        let entries_arc = Arc::new(log_entries);
+
+        // Group Commit via WalManager (Zero-copy send)
+        self.wal.submit(Arc::clone(&entries_arc))?;
 
         let memtable = self.memtable.load();
-        for entry in log_entries {
+        for entry in entries_arc.iter() {
             match entry {
-                LogEntry::Put(k, v) => memtable.put(k, v),
-                LogEntry::Delete(k) => memtable.delete(k),
+                LogEntry::Put(k, v) => memtable.put(Arc::clone(k), Arc::clone(v)),
+                LogEntry::Delete(k) => memtable.delete(Arc::clone(k)),
             }
         }
 

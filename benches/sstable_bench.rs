@@ -12,7 +12,10 @@ pub fn sstable_bench(c: &mut Criterion) {
 
     let mem = MemTable::new();
     for i in 0..1000 {
-        mem.put(format!("key-{:05}", i), Arc::new(format!("value-{}", i)));
+        mem.put(
+            Arc::new(format!("key-{:05}", i)),
+            Arc::new(format!("value-{}", i)),
+        );
     }
 
     let sst = SSTable::write_from_memtable(&sstable_path, &mem, SSTableId(1), None).unwrap();

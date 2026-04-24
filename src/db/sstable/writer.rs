@@ -46,9 +46,9 @@ where
         for item in iter {
             let entry = item?;
             if min_key.is_none() {
-                min_key = Some(entry.key.clone());
+                min_key = Some(Arc::clone(&entry.key));
             }
-            max_key = Some(entry.key.clone());
+            max_key = Some(Arc::clone(&entry.key));
             num_entries += 1;
 
             use std::collections::hash_map::DefaultHasher;
@@ -58,7 +58,7 @@ where
             key_hashes.push(s.finish());
 
             if builder.is_empty() {
-                sparse_index.insert(entry.key.clone(), current_offset);
+                sparse_index.insert(Arc::clone(&entry.key), current_offset);
             }
 
             builder.add(&entry.key, &entry.value);
@@ -99,8 +99,8 @@ where
 
         let meta_offset: u64 = index_offset + index_size;
         let meta = TableMeta {
-            min_key,
-            max_key,
+            min_key: (*min_key).clone(),
+            max_key: (*max_key).clone(),
             num_entries,
             filter_type,
             compression_type: COMPRESSION_NONE,
@@ -126,7 +126,12 @@ where
         id: SSTableId,
         block_cache: Option<Arc<crate::db::cache::BlockCache<K, V>>>,
     ) -> Result<Self> {
-        let iter = memtable.iter().map(|(k, v)| Ok(Entry { key: k, value: v }));
+        let iter = memtable.iter().map(|(k, v)| {
+            Ok(Entry {
+                key: k,
+                value: v,
+            })
+        });
         Self::write_from_iter(path, iter, id, 0, block_cache)
     }
 }

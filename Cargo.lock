@@ -334,6 +334,7 @@ dependencies = [
  "colored",
  "crc32fast",
  "criterion",
+ "crossbeam-channel",
  "crossbeam-skiplist",
  "moka",
  "parking_lot",

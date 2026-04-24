@@ -9,7 +9,7 @@ pub fn memtable_bench(c: &mut Criterion) {
     let val = Arc::new("value-000000000000000000000000000000".to_string());
 
     group.bench_function("put_30b", |b| {
-        let mut mem = MemTable::new();
+        let mem = MemTable::new();
         b.iter(|| {
             mem.put(
                 black_box("key-0000000000".to_string()),
@@ -19,7 +19,7 @@ pub fn memtable_bench(c: &mut Criterion) {
     });
 
     group.bench_function("get_hit", |b| {
-        let mut mem = MemTable::new();
+        let mem = MemTable::new();
         mem.put("key-target".to_string(), val.clone());
         b.iter(|| {
             mem.get(black_box(&"key-target".to_string()));

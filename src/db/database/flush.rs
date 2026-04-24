@@ -90,8 +90,7 @@ where
             }
 
             {
-                let mut wal = self.wal.lock();
-                wal.clear()?;
+                self.wal.clear()?;
             }
         }
         self.check_all_compactions();

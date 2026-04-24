@@ -49,9 +49,7 @@ where
         }
 
         {
-            let mut wal = self.wal.lock();
-            wal.append_batch(&log_entries)?;
-            wal.flush()?;
+            self.wal.submit(log_entries.clone())?;
         }
 
         let memtable = self.memtable.load();

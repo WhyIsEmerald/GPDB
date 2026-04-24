@@ -2,6 +2,7 @@ use crate::{Error, Result};
 use crc32fast::Hasher;
 use serde::{Serialize, de::DeserializeOwned};
 use std::io::{Read, Write};
+use std::sync::Arc;
 
 /// Writes a data-frame to the writer: [Checksum (4), Length (8), Data]
 /// Returns the total number of bytes written.
@@ -29,7 +30,7 @@ pub fn read_record<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<Optio
         if e.kind() == std::io::ErrorKind::UnexpectedEof {
             return Ok(None);
         }
-        return Err(Error::Io(e));
+        return Err(Error::Io(Arc::new(e)));
     }
     let expected_checksum = u32::from_le_bytes(checksum_bytes);
 
@@ -38,7 +39,7 @@ pub fn read_record<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<Optio
         if e.kind() == std::io::ErrorKind::UnexpectedEof {
             Error::Corruption("Unexpected EOF while reading record length".to_string())
         } else {
-            Error::Io(e)
+            Error::Io(Arc::new(e))
         }
     })?;
     let len = u64::from_le_bytes(len_bytes) as usize;
@@ -56,7 +57,7 @@ pub fn read_record<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<Optio
         if e.kind() == std::io::ErrorKind::UnexpectedEof {
             Error::Corruption("Unexpected EOF while reading record data".to_string())
         } else {
-            Error::Io(e)
+            Error::Io(Arc::new(e))
         }
     })?;
 

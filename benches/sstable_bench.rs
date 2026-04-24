@@ -10,7 +10,7 @@ pub fn sstable_bench(c: &mut Criterion) {
     let tmp_dir = TempDir::new().unwrap();
     let sstable_path = tmp_dir.path().join("bench.sst");
 
-    let mut mem = MemTable::new();
+    let mem = MemTable::new();
     for i in 0..1000 {
         mem.put(format!("key-{:05}", i), Arc::new(format!("value-{}", i)));
     }

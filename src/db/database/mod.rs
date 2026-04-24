@@ -3,6 +3,7 @@ pub mod read;
 pub mod write;
 
 use crate::db::compaction::{CompactionResult, CompactionTask, Compactor};
+use crate::db::wal::WalManager;
 use crate::{
     BlockCache, DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId, Wal,
 };
@@ -48,7 +49,7 @@ where
     V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
 {
     pub(crate) memtable: Arc<ArcSwap<MemTable<K, V>>>,
-    pub(crate) wal: Arc<Mutex<Wal<K, V>>>,
+    pub(crate) wal: Arc<WalManager<K, V>>,
     pub(crate) manifest: Arc<Mutex<Manifest>>,
     pub(crate) version: Arc<ArcSwap<VersionState<K, V>>>,
     pub(crate) block_cache: Arc<BlockCache<K, V>>,
@@ -152,7 +153,7 @@ where
 
         Ok(Self {
             memtable: Arc::new(ArcSwap::from(memtable)),
-            wal: Arc::new(Mutex::new(wal)),
+            wal: Arc::new(WalManager::new(wal)),
             manifest: Arc::new(Mutex::new(manifest)),
             version,
             block_cache,

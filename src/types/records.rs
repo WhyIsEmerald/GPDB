@@ -25,10 +25,19 @@ impl<K: Clone, V> Clone for Entry<K, V> {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum LogEntry<K, V> {
     Put(K, Arc<V>),
     Delete(K),
+}
+
+impl<K: Clone, V> Clone for LogEntry<K, V> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Put(k, v) => Self::Put(k.clone(), Arc::clone(v)),
+            Self::Delete(k) => Self::Delete(k.clone()),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

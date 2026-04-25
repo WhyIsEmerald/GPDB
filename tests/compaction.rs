@@ -90,13 +90,13 @@ fn merge_stream_integration() {
 
     let results: Vec<Entry<String, String>> = stream.map(|r| r.unwrap()).collect();
 
-    assert_eq!(results[0].key, "A");
+    assert_eq!(results[0].key, Arc::new("A".to_string()));
     assert_eq!(results[0].value.value.as_ref().unwrap().as_str(), "v2-new");
 
-    assert_eq!(results[1].key, "B");
-    assert_eq!(results[2].key, "C");
-    assert_eq!(results[3].key, "D");
-    assert_eq!(results[4].key, "E");
+    assert_eq!(results[1].key, Arc::new("B".to_string()));
+    assert_eq!(results[2].key, Arc::new("C".to_string()));
+    assert_eq!(results[3].key, Arc::new("D".to_string()));
+    assert_eq!(results[4].key, Arc::new("E".to_string()));
     assert_eq!(results.len(), 5);
 }
 
@@ -106,18 +106,18 @@ fn compactor_l0_to_disk() {
 
     let path1 = tmp_dir.path().join("L0-1.sst");
     let mem1 = MemTable::new();
-    mem1.put("A".to_string(), Arc::new("old".to_string()));
-    mem1.put("C".to_string(), Arc::new("val".to_string()));
+    mem1.put(Arc::new("A".to_string()), Arc::new("old".to_string()));
+    mem1.put(Arc::new("C".to_string()), Arc::new("val".to_string()));
     let sst1 = SSTable::write_from_memtable(&path1, &mem1, SSTableId(1), None).unwrap();
 
     let path2 = tmp_dir.path().join("L0-2.sst");
     let mem2 = MemTable::new();
-    mem2.put("A".to_string(), Arc::new("new".to_string()));
-    mem2.put("B".to_string(), Arc::new("val".to_string()));
+    mem2.put(Arc::new("A".to_string()), Arc::new("new".to_string()));
+    mem2.put(Arc::new("B".to_string()), Arc::new("val".to_string()));
     let sst2 = SSTable::write_from_memtable(&path2, &mem2, SSTableId(2), None).unwrap();
 
     let l1_path = tmp_dir.path().join("L1-5.sst");
-    let sst_l1 = Compactor::compact_l0(&[sst1, sst2], &l1_path, SSTableId(5), None)
+    let sst_l1 = Compactor::compact_l0(&[sst1, sst2][..], &l1_path, SSTableId(5), None)
         .expect("Compaction failed");
 
     assert_eq!(sst_l1.id(), SSTableId(5));

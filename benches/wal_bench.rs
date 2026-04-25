@@ -22,7 +22,7 @@ pub fn wal_bench(c: &mut Criterion) {
                 if count % 1000 == 0 {
                     wal.clear().unwrap();
                 }
-                wal.append(black_box(Arc::new(entry.clone()))).unwrap();
+                wal.append_batch(&vec![black_box(entry.clone())]).unwrap();
             })
         });
 
@@ -33,7 +33,7 @@ pub fn wal_bench(c: &mut Criterion) {
                 if count % 1000 == 0 {
                     wal.clear().unwrap();
                 }
-                wal.append(black_box(Arc::new(entry.clone()))).unwrap();
+                wal.append_batch(&vec![black_box(entry.clone())]).unwrap();
                 wal.flush().unwrap();
             })
         });

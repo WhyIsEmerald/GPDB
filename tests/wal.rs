@@ -19,13 +19,15 @@ fn create_and_append_flush() {
 
     let key1 = "key1".to_string();
     let val1 = Arc::new("value1".to_string());
-    let entry1 = LogEntry::Put(key1.clone(), val1.clone());
-    wal.append(&entry1).expect("Failed to write log entry");
+    let entry1 = LogEntry::Put(Arc::new(key1.clone()), val1.clone());
+    wal.append_batch(&[entry1])
+        .expect("Failed to write log entry");
 
     let key2 = "key2".to_string();
     let val2 = Arc::new("value2".to_string());
-    let entry2 = LogEntry::Put(key2.clone(), val2.clone());
-    wal.append(&entry2).expect("Failed to write log entry");
+    let entry2 = LogEntry::Put(Arc::new(key2.clone()), val2.clone());
+    wal.append_batch(&[entry2])
+        .expect("Failed to write log entry");
 
     wal.flush().expect("Failed to flush WAL");
 
@@ -41,12 +43,15 @@ fn recovery_and_iter() {
         let mut wal: Wal<String, String> =
             Wal::create(&wal_path).expect("Failed to create WAL for writing");
 
-        let entry1 = LogEntry::Put("k1".to_string(), Arc::new("v1".to_string()));
-        wal.append(&entry1).expect("Failed to write log entry");
-        let entry2 = LogEntry::Delete("k2".to_string());
-        wal.append(&entry2).expect("Failed to write log entry");
-        let entry3 = LogEntry::Put("k3".to_string(), Arc::new("v3".to_string()));
-        wal.append(&entry3).expect("Failed to write log entry");
+        let entry1 = LogEntry::Put(Arc::new("k1".to_string()), Arc::new("v1".to_string()));
+        wal.append_batch(&[entry1])
+            .expect("Failed to write log entry");
+        let entry2 = LogEntry::Delete(Arc::new("k2".to_string()));
+        wal.append_batch(&[entry2])
+            .expect("Failed to write log entry");
+        let entry3 = LogEntry::Put(Arc::new("k3".to_string()), Arc::new("v3".to_string()));
+        wal.append_batch(&[entry3])
+            .expect("Failed to write log entry");
 
         wal.flush().expect("Failed to flush WAL");
     }
@@ -60,14 +65,14 @@ fn recovery_and_iter() {
         .expect("Entry1 read failed");
     assert_eq!(
         entry1_read,
-        LogEntry::Put("k1".to_string(), Arc::new("v1".to_string()))
+        LogEntry::Put(Arc::new("k1".to_string()), Arc::new("v1".to_string()))
     );
 
     let entry2_read = wal_iter
         .next()
         .expect("Expected entry2")
         .expect("Entry2 read failed");
-    assert_eq!(entry2_read, LogEntry::Delete("k2".to_string()));
+    assert_eq!(entry2_read, LogEntry::Delete(Arc::new("k2".to_string())));
 
     let entry3_read = wal_iter
         .next()
@@ -75,7 +80,7 @@ fn recovery_and_iter() {
         .expect("Entry3 read failed");
     assert_eq!(
         entry3_read,
-        LogEntry::Put("k3".to_string(), Arc::new("v3".to_string()))
+        LogEntry::Put(Arc::new("k3".to_string()), Arc::new("v3".to_string()))
     );
 
     assert!(wal_iter.next().is_none(), "Expected no more entries");
@@ -85,13 +90,16 @@ fn recovery_and_iter() {
 fn clear() {
     let (_tmp_dir, wal_path) = setup();
     let mut wal: Wal<String, String> = Wal::create(&wal_path).expect("Failed to create WAL");
-    let entry1 = LogEntry::Put("k1".to_string(), Arc::new("v1".to_string()));
-    let entry2 = LogEntry::Delete("k2".to_string());
-    let entry3 = LogEntry::Put("k3".to_string(), Arc::new("v3".to_string()));
+    let entry1 = LogEntry::Put(Arc::new("k1".to_string()), Arc::new("v1".to_string()));
+    let entry2 = LogEntry::Delete(Arc::new("k2".to_string()));
+    let entry3 = LogEntry::Put(Arc::new("k3".to_string()), Arc::new("v3".to_string()));
 
-    wal.append(&entry1).expect("Failed to write log entry");
-    wal.append(&entry2).expect("Failed to write log entry");
-    wal.append(&entry3).expect("Failed to write log entry");
+    wal.append_batch(&[entry1])
+        .expect("Failed to write log entry");
+    wal.append_batch(&[entry2])
+        .expect("Failed to write log entry");
+    wal.append_batch(&[entry3])
+        .expect("Failed to write log entry");
 
     wal.flush().expect("Failed to flush WAL");
 
@@ -108,8 +116,9 @@ fn corrupt_entry() {
     {
         let mut wal: Wal<String, String> = Wal::create(&wal_path).expect("Failed to create WAL");
 
-        let entry1 = LogEntry::Put("k1".to_string(), Arc::new("v1".to_string()));
-        wal.append(&entry1).expect("Failed to write log entry");
+        let entry1 = LogEntry::Put(Arc::new("k1".to_string()), Arc::new("v1".to_string()));
+        wal.append_batch(&[entry1])
+            .expect("Failed to write log entry");
         wal.flush().expect("Failed to flush WAL");
     }
 

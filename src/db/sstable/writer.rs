@@ -126,12 +126,7 @@ where
         id: SSTableId,
         block_cache: Option<Arc<crate::db::cache::BlockCache<K, V>>>,
     ) -> Result<Self> {
-        let iter = memtable.iter().map(|(k, v)| {
-            Ok(Entry {
-                key: k,
-                value: v,
-            })
-        });
+        let iter = memtable.iter().map(|(k, v)| Ok(Entry { key: k, value: v }));
         Self::write_from_iter(path, iter, id, 0, block_cache)
     }
 }

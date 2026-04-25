@@ -144,20 +144,29 @@ where
                         // Group multiple writes
                         while let Ok(next_task) = task_rx.try_recv() {
                             match next_task {
-                                WalTask::Write { entries: next_entries, resp_tx: next_resp } => {
+                                WalTask::Write {
+                                    entries: next_entries,
+                                    resp_tx: next_resp,
+                                } => {
                                     let _ = wal.append_batch(&next_entries);
                                     batch_resps.push(next_resp);
                                 }
-                                WalTask::Clear { resp_tx: clear_resp } => {
+                                WalTask::Clear {
+                                    resp_tx: clear_resp,
+                                } => {
                                     clear_task = Some(clear_resp);
                                     break;
                                 }
                             }
-                            if batch_resps.len() >= 1024 { break; }
+                            if batch_resps.len() >= 1024 {
+                                break;
+                            }
                         }
 
                         let result = wal.flush();
-                        for r in batch_resps { let _ = r.send(result.clone()); }
+                        for r in batch_resps {
+                            let _ = r.send(result.clone());
+                        }
 
                         if let Some(resp) = clear_task {
                             let r = wal.clear();

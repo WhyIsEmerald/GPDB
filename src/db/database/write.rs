@@ -41,10 +41,7 @@ where
             let log_entry = if entry.value.is_tombstone {
                 LogEntry::Delete(entry.key)
             } else {
-                LogEntry::Put(
-                    entry.key,
-                    entry.value.value.expect("Value missing"),
-                )
+                LogEntry::Put(entry.key, entry.value.value.expect("Value missing"))
             };
             log_entries.push(log_entry);
         }

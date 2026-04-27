@@ -19,7 +19,7 @@ where
 
         let version = self.version.load();
         for imm in version.immutables.iter().rev() {
-            if let Some(entry) = imm.get_entry(&key_arc) {
+            if let Some(entry) = imm.memtable.get_entry(&key_arc) {
                 if entry.is_tombstone {
                     return Ok(None);
                 }

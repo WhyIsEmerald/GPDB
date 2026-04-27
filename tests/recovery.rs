@@ -15,7 +15,7 @@ fn recovery_from_corrupted_wal() {
     }
 
     // Manually corrupt the WAL by flipping a bit in the middle
-    let wal_path = path.join("wal.log");
+    let wal_path = path.join("000000.wal");
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -40,7 +40,7 @@ fn recovery_from_partial_wal_write() {
     }
 
     // Truncate the WAL to simulate partial write at the end
-    let wal_path = path.join("wal.log");
+    let wal_path = path.join("000000.wal");
     let metadata = std::fs::metadata(&wal_path).unwrap();
     let file = OpenOptions::new().write(true).open(&wal_path).unwrap();
     file.set_len(metadata.len() - 5).unwrap(); // Chop off last few bytes

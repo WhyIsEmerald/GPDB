@@ -18,7 +18,6 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc;
 
 pub(crate) const MANIFEST_FILE_NAME: &str = "MANIFEST";
-pub(crate) const WAL_FILE_NAME: &str = "wal.log";
 
 /// An immutable point-in-time view of the database's SSTables and Immutable MemTables.
 #[derive(Debug)]
@@ -28,7 +27,30 @@ where
     V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     pub levels: Vec<Vec<SSTable<K, V>>>,
-    pub immutables: Vec<Arc<MemTable<K, V>>>,
+    pub immutables: Vec<ImmutableMemTable<K, V>>,
+}
+
+#[derive(Debug)]
+pub struct ImmutableMemTable<K, V>
+where
+    K: DBKey + Send + Sync + 'static,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static,
+{
+    pub memtable: Arc<MemTable<K, V>>,
+    pub wal_id: u64,
+}
+
+impl<K, V> Clone for ImmutableMemTable<K, V>
+where
+    K: DBKey + Send + Sync + 'static,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            memtable: Arc::clone(&self.memtable),
+            wal_id: self.wal_id,
+        }
+    }
 }
 
 impl<K, V> VersionState<K, V>
@@ -36,7 +58,10 @@ where
     K: DBKey + Send + Sync + 'static,
     V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
-    pub fn new(levels: Vec<Vec<SSTable<K, V>>>, immutables: Vec<Arc<MemTable<K, V>>>) -> Self {
+    pub fn new(
+        levels: Vec<Vec<SSTable<K, V>>>,
+        immutables: Vec<ImmutableMemTable<K, V>>,
+    ) -> Self {
         Self { levels, immutables }
     }
 }
@@ -130,20 +155,35 @@ where
             levels,
             immutables: Vec::new(),
         })));
-        let wal_path = path.join(WAL_FILE_NAME);
+
+        // Discover and recover WALs
+        let mut wal_files = Vec::new();
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("wal") {
+                if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                    if let Ok(id) = name.parse::<u64>() {
+                        wal_files.push((id, path));
+                    }
+                }
+            }
+        }
+        wal_files.sort_by_key(|(id, _)| *id);
+
         let memtable = Arc::new(MemTable::new());
-        let wal = if wal_path.exists() {
-            let existing_wal = Wal::open(&wal_path)?;
+        let mut last_wal_id = 0;
+
+        for (id, wal_path) in &wal_files {
+            last_wal_id = *id;
+            let existing_wal = Wal::open(wal_path)?;
             for entry in existing_wal.iter()? {
                 match entry.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))? {
                     LogEntry::Put(k, v) => memtable.put(k, v),
                     LogEntry::Delete(k) => memtable.delete(k),
                 }
             }
-            Wal::open(&wal_path)?
-        } else {
-            Wal::create(&wal_path)?
-        };
+        }
 
         let (task_tx, task_rx) = mpsc::channel();
         let (result_tx, result_rx) = mpsc::channel();
@@ -153,7 +193,7 @@ where
 
         Ok(Self {
             memtable: Arc::new(ArcSwap::from(memtable)),
-            wal: Arc::new(WalManager::new(wal)),
+            wal: Arc::new(WalManager::new(path.to_path_buf(), last_wal_id)?),
             manifest: Arc::new(Mutex::new(manifest)),
             version,
             block_cache,

@@ -22,6 +22,9 @@ where
         let old_memtable = self.memtable.load_full();
         let new_memtable = Arc::new(MemTable::new());
 
+        // Rotate WAL before switching memtable
+        let wal_id = self.wal.rotate()?;
+
         self.memtable.store(new_memtable);
         self.config.memtable_size.store(0, Ordering::Relaxed);
 
@@ -29,7 +32,10 @@ where
             let _manifest = self.manifest.lock();
             let old_version = self.version.load();
             let mut new_immutables = old_version.immutables.clone();
-            new_immutables.push(old_memtable);
+            new_immutables.push(crate::db::database::ImmutableMemTable {
+                memtable: old_memtable,
+                wal_id,
+            });
 
             self.version.store(Arc::new(VersionState {
                 levels: old_version.levels.clone(),
@@ -48,7 +54,8 @@ where
                 break;
             }
 
-            let imm = Arc::clone(&version.immutables[0]);
+            let imm_entry = version.immutables[0].clone();
+            let imm = Arc::clone(&imm_entry.memtable);
 
             let id: SSTableId;
             let filename: String;
@@ -90,7 +97,7 @@ where
             }
 
             {
-                self.wal.clear()?;
+                self.wal.delete(imm_entry.wal_id)?;
             }
         }
         self.check_all_compactions();

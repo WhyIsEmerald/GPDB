@@ -108,12 +108,16 @@ enum WalTask<K, V> {
         entries: Arc<Vec<LogEntry<K, V>>>,
         resp_tx: Sender<Result<()>>,
     },
-    Clear {
+    Rotate {
+        resp_tx: Sender<Result<u64>>,
+    },
+    Delete {
+        id: u64,
         resp_tx: Sender<Result<()>>,
     },
 }
 
-/// `WalManager` coordinates Group Commits for the WAL.
+/// `WalManager` coordinates Group Commits and WAL rotation.
 #[derive(Debug)]
 pub struct WalManager<K, V>
 where
@@ -128,15 +132,22 @@ where
     K: DBKey + Send + Sync + 'static,
     V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
-    pub fn new(mut wal: Wal<K, V>) -> Self {
+    pub fn new(dir: PathBuf, mut current_id: u64) -> Result<Self> {
         let (task_tx, task_rx): (Sender<WalTask<K, V>>, Receiver<WalTask<K, V>>) = unbounded();
+
+        let wal_path = dir.join(format!("{:06}.wal", current_id));
+        let mut wal = if wal_path.exists() {
+            Wal::open(&wal_path)?
+        } else {
+            Wal::create(&wal_path)?
+        };
 
         std::thread::spawn(move || {
             while let Ok(first_task) = task_rx.recv() {
                 match first_task {
                     WalTask::Write { entries, resp_tx } => {
                         let mut batch_resps = vec![resp_tx];
-                        let mut clear_task = None;
+                        let mut next_rotate = None;
 
                         // Start batch by appending first request
                         let mut result = wal.append_batch(&entries);
@@ -155,12 +166,11 @@ where
                                             break;
                                         }
                                     }
-                                    WalTask::Clear {
-                                        resp_tx: clear_resp,
-                                    } => {
-                                        clear_task = Some(clear_resp);
+                                    WalTask::Rotate { resp_tx: rot_tx } => {
+                                        next_rotate = Some(rot_tx);
                                         break;
                                     }
+                                    _ => break,
                                 }
                                 if batch_resps.len() >= 1024 {
                                     break;
@@ -177,20 +187,44 @@ where
                             let _ = r.send(result.clone());
                         }
 
-                        if let Some(resp) = clear_task {
-                            let r = wal.clear();
-                            let _ = resp.send(r);
+                        if let Some(resp) = next_rotate {
+                            let old_id = current_id;
+                            current_id += 1;
+                            let new_path = dir.join(format!("{:06}.wal", current_id));
+                            match Wal::create(&new_path) {
+                                Ok(new_wal) => {
+                                    wal = new_wal;
+                                    let _ = resp.send(Ok(old_id));
+                                }
+                                Err(e) => {
+                                    let _ = resp.send(Err(e));
+                                }
+                            }
                         }
                     }
-                    WalTask::Clear { resp_tx } => {
-                        let result = wal.clear();
-                        let _ = resp_tx.send(result);
+                    WalTask::Rotate { resp_tx } => {
+                        let old_id = current_id;
+                        current_id += 1;
+                        let new_path = dir.join(format!("{:06}.wal", current_id));
+                        match Wal::create(&new_path) {
+                            Ok(new_wal) => {
+                                wal = new_wal;
+                                let _ = resp_tx.send(Ok(old_id));
+                            }
+                            Err(e) => {
+                                let _ = resp_tx.send(Err(e));
+                            }
+                        }
+                    }
+                    WalTask::Delete { id, resp_tx } => {
+                        let path = dir.join(format!("{:06}.wal", id));
+                        let _ = resp_tx.send(std::fs::remove_file(path).map_err(Into::into));
                     }
                 }
             }
         });
 
-        Self { task_tx }
+        Ok(Self { task_tx })
     }
 
     pub fn submit(&self, entries: Arc<Vec<LogEntry<K, V>>>) -> Result<()> {
@@ -203,10 +237,20 @@ where
             .map_err(|_| Error::Corruption("WAL worker dropped response".into()))?
     }
 
-    pub fn clear(&self) -> Result<()> {
+    pub fn rotate(&self) -> Result<u64> {
         let (resp_tx, resp_rx) = unbounded();
         self.task_tx
-            .send(WalTask::Clear { resp_tx })
+            .send(WalTask::Rotate { resp_tx })
+            .map_err(|_| Error::Corruption("WAL worker crashed".into()))?;
+        resp_rx
+            .recv()
+            .map_err(|_| Error::Corruption("WAL worker dropped response".into()))?
+    }
+
+    pub fn delete(&self, id: u64) -> Result<()> {
+        let (resp_tx, resp_rx) = unbounded();
+        self.task_tx
+            .send(WalTask::Delete { id, resp_tx })
             .map_err(|_| Error::Corruption("WAL worker crashed".into()))?;
         resp_rx
             .recv()

@@ -1,0 +1,5 @@
+Phase                        |          Ops |  Speed (ops/s) |   Mean μs |    p50 μs |    p95 μs |    p99 μs |   SSTs | Accuracy(%) | ReadImp(%) |        Δμs
+Bulk Ingestion               |      500_000 |        900_258 |       1.1 |         - |         - |         - |      0 |      100.0 |          - |          -
+Random Read (Dirty)          |       50_000 |        187_458 |       3.0 |       3.0 |       5.0 |       8.0 |      0 |      100.0 |       1.54 |       0.05
+Compaction Wait              |            1 |      1_022_495 |      0.98 |         - |         - |         - |      0 |      100.0 |          - |          -
+Random Read (Cleaned)        |       50_000 |        190_205 |       3.0 |       3.0 |       5.0 |       7.0 |      0 |      100.0 |       1.54 |       0.05

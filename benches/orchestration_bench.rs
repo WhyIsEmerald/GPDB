@@ -43,6 +43,18 @@ pub fn orchestration_bench(c: &mut Criterion) {
         })
     });
 
+    for batch_size in [10, 100, 1000] {
+        group.bench_function(format!("write_batch_{}", batch_size), |b| {
+            b.iter(|| {
+                let mut batch = gpdb::WriteBatch::new();
+                for i in 0..batch_size {
+                    batch.put(format!("key-{}", i), "val".to_string());
+                }
+                db.write_batch(black_box(batch)).unwrap();
+            })
+        });
+    }
+
     group.finish();
 }
 

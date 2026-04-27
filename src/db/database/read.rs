@@ -9,7 +9,8 @@ where
     V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
 {
     pub fn get(&self, key: &K) -> Result<Option<Arc<V>>> {
-        if let Some(entry) = self.memtable.load().get_entry(key) {
+        let key_arc = Arc::new(key.clone());
+        if let Some(entry) = self.memtable.load().get_entry(&key_arc) {
             if entry.is_tombstone {
                 return Ok(None);
             }
@@ -18,7 +19,7 @@ where
 
         let version = self.version.load();
         for imm in version.immutables.iter().rev() {
-            if let Some(entry) = imm.get_entry(key) {
+            if let Some(entry) = imm.memtable.get_entry(&key_arc) {
                 if entry.is_tombstone {
                     return Ok(None);
                 }

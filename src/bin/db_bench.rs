@@ -587,6 +587,19 @@ fn main() -> gpdb::Result<()> {
             threads: 8,
             pattern: KeyPattern::Striped(16),
         },
+        BenchConfig {
+            name: "HighBatchIngest".into(),
+            num_writes: 500_000,
+            num_overwrites: 0,
+            num_reads: 50_000,
+            num_deletes: 0,
+            memtable_size: 32 * 1024 * 1024,
+            key_size: 32,
+            val_size: 128,
+            batch_size: 10_000,
+            threads: 1,
+            pattern: KeyPattern::Sequential,
+        },
     ];
 
     if std::env::var("GPDB_QUICK_BENCH").is_ok() {

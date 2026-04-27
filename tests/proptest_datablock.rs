@@ -23,7 +23,7 @@ proptest! {
             };
             builder.add(key, &entry);
             entries.push(Entry {
-                key: key.clone(),
+                key: Arc::new(key.clone()),
                 value: entry,
             });
         }

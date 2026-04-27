@@ -2,6 +2,7 @@ use crate::{DBKey, ValueEntry};
 use serde::{Deserialize, Serialize};
 use std::io::{Cursor, Read};
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 /// Target size for a data block (4KB)
 pub const BLOCK_SIZE: usize = 4096;
@@ -94,7 +95,7 @@ impl<K, V> DataBlock<K, V> {
         iter.seek_to_offset(self.restart_points[start_index] as usize);
 
         while let Some(entry) = iter.next() {
-            match entry.key.cmp(target) {
+            match entry.key.as_ref().cmp(target) {
                 std::cmp::Ordering::Equal => return Some(entry.value),
                 std::cmp::Ordering::Greater => return None,
                 std::cmp::Ordering::Less => continue,
@@ -233,6 +234,9 @@ where
         let value: ValueEntry<V> = bincode::deserialize(&val_bytes).ok()?;
 
         self.last_key_bytes = key_bytes;
-        Some(crate::Entry { key, value })
+        Some(crate::Entry {
+            key: Arc::new(key),
+            value,
+        })
     }
 }

@@ -9,20 +9,20 @@ pub fn memtable_bench(c: &mut Criterion) {
     let val = Arc::new("value-000000000000000000000000000000".to_string());
 
     group.bench_function("put_30b", |b| {
-        let mut mem = MemTable::new();
+        let mem = MemTable::new();
         b.iter(|| {
             mem.put(
-                black_box("key-0000000000".to_string()),
+                black_box(Arc::new("key-0000000000".to_string())),
                 black_box(val.clone()),
             );
         })
     });
 
     group.bench_function("get_hit", |b| {
-        let mut mem = MemTable::new();
-        mem.put("key-target".to_string(), val.clone());
+        let mem = MemTable::new();
+        mem.put(Arc::new("key-target".to_string()), val.clone());
         b.iter(|| {
-            mem.get(black_box(&"key-target".to_string()));
+            mem.get(black_box(&Arc::new("key-target".to_string())));
         })
     });
 

@@ -139,31 +139,40 @@ where
                         let mut clear_task = None;
 
                         // Start batch by appending first request
-                        let _ = wal.append_batch(&entries);
+                        let mut result = wal.append_batch(&entries);
 
-                        // Group multiple writes
-                        while let Ok(next_task) = task_rx.try_recv() {
-                            match next_task {
-                                WalTask::Write {
-                                    entries: next_entries,
-                                    resp_tx: next_resp,
-                                } => {
-                                    let _ = wal.append_batch(&next_entries);
-                                    batch_resps.push(next_resp);
+                        // Group multiple writes if first succeeded
+                        if result.is_ok() {
+                            while let Ok(next_task) = task_rx.try_recv() {
+                                match next_task {
+                                    WalTask::Write {
+                                        entries: next_entries,
+                                        resp_tx: next_resp,
+                                    } => {
+                                        result = wal.append_batch(&next_entries);
+                                        batch_resps.push(next_resp);
+                                        if result.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    WalTask::Clear {
+                                        resp_tx: clear_resp,
+                                    } => {
+                                        clear_task = Some(clear_resp);
+                                        break;
+                                    }
                                 }
-                                WalTask::Clear {
-                                    resp_tx: clear_resp,
-                                } => {
-                                    clear_task = Some(clear_resp);
+                                if batch_resps.len() >= 1024 {
                                     break;
                                 }
                             }
-                            if batch_resps.len() >= 1024 {
-                                break;
-                            }
                         }
 
-                        let result = wal.flush();
+                        // Flush only if all appends succeeded
+                        if result.is_ok() {
+                            result = wal.flush();
+                        }
+
                         for r in batch_resps {
                             let _ = r.send(result.clone());
                         }

@@ -58,10 +58,7 @@ where
     K: DBKey + Send + Sync + 'static,
     V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
-    pub fn new(
-        levels: Vec<Vec<SSTable<K, V>>>,
-        immutables: Vec<ImmutableMemTable<K, V>>,
-    ) -> Self {
+    pub fn new(levels: Vec<Vec<SSTable<K, V>>>, immutables: Vec<ImmutableMemTable<K, V>>) -> Self {
         Self { levels, immutables }
     }
 }

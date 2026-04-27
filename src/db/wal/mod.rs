@@ -203,18 +203,16 @@ where
                         }
                     }
                     WalTask::Rotate { resp_tx } => {
-                        let old_id = current_id;
-                        current_id += 1;
-                        let new_path = dir.join(format!("{:06}.wal", current_id));
-                        match Wal::create(&new_path) {
-                            Ok(new_wal) => {
+                        let res = wal.flush().and_then(|_| {
+                            let old_id = current_id;
+                            current_id += 1;
+                            let new_path = dir.join(format!("{:06}.wal", current_id));
+                            Wal::create(&new_path).map(|new_wal| {
                                 wal = new_wal;
-                                let _ = resp_tx.send(Ok(old_id));
-                            }
-                            Err(e) => {
-                                let _ = resp_tx.send(Err(e));
-                            }
-                        }
+                                old_id
+                            })
+                        });
+                        let _ = resp_tx.send(res);
                     }
                     WalTask::Delete { id, resp_tx } => {
                         let path = dir.join(format!("{:06}.wal", id));

@@ -11,9 +11,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::config::{BenchConfig, KeyPattern};
-use crate::metrics::{LatStats, Metrics, percentile};
-use crate::reporter::Reporter;
+use self::config::{BenchConfig, KeyPattern};
+use self::metrics::{LatStats, Metrics, percentile};
+use self::reporter::Reporter;
 
 fn calculate_lat_stats(samples: Vec<u128>) -> Option<LatStats> {
     if samples.is_empty() {
@@ -92,12 +92,12 @@ fn run_read_phase(
 
     let touch_stats = if !touched_samples.is_empty() {
         let sum: u128 = touched_samples.iter().sum();
-        Some(crate::metrics::TouchStats {
+        Some(self::metrics::TouchStats {
             mean: sum as f64 / touched_samples.len() as f64,
-            p50: crate::metrics::percentile(touched_samples.clone(), 50.0),
-            p90: crate::metrics::percentile(touched_samples.clone(), 90.0),
-            p95: crate::metrics::percentile(touched_samples.clone(), 95.0),
-            p99: crate::metrics::percentile(touched_samples.clone(), 99.0),
+            p50: self::metrics::percentile(touched_samples.clone(), 50.0),
+            p90: self::metrics::percentile(touched_samples.clone(), 90.0),
+            p95: self::metrics::percentile(touched_samples.clone(), 95.0),
+            p99: self::metrics::percentile(touched_samples.clone(), 99.0),
         })
     } else {
         None
@@ -112,7 +112,7 @@ fn run_read_phase(
         filter_avoided_io: avoided_io,
         lat: calculate_lat_stats(samples),
         touch: touch_stats,
-        cache_hit_rate: cache_hit_rate,
+        cache_hit_rate,
     })
 }
 
@@ -125,7 +125,7 @@ fn run_full_benchmark(cfg: &BenchConfig) -> gpdb::Result<()> {
     fs::create_dir_all("logs")?;
     fs::create_dir_all("bench_data")?;
 
-    let db_path = Path::new("bench_data").join(&cfg.name.replace(' ', "_"));
+    let db_path = Path::new("bench_data").join(cfg.name.replace(' ', "_"));
     if db_path.exists() {
         fs::remove_dir_all(&db_path)?;
     }
@@ -268,8 +268,9 @@ fn run_full_benchmark(cfg: &BenchConfig) -> gpdb::Result<()> {
     }
 
     let start = Instant::now();
+    let mut total_compacted = 0;
     while db.compaction_backlog() > 0 {
-        db.handle_compaction_results()?;
+        total_compacted += db.handle_compaction_results()?;
         thread::sleep(Duration::from_millis(100));
         if start.elapsed() > Duration::from_secs(60) {
             println!("{}", "Compaction timeout reached".red());
@@ -279,7 +280,7 @@ fn run_full_benchmark(cfg: &BenchConfig) -> gpdb::Result<()> {
 
     reporter.record(Metrics {
         name: "Compaction Wait".into(),
-        total_ops: 1,
+        total_ops: total_compacted,
         duration: start.elapsed(),
         sst_count: db.total_sst_count(),
         accuracy: 100.0,
@@ -311,7 +312,7 @@ fn run_full_benchmark(cfg: &BenchConfig) -> gpdb::Result<()> {
     Ok(())
 }
 
-fn main() -> gpdb::Result<()> {
+pub fn run() -> gpdb::Result<()> {
     let mut configs = vec![
         BenchConfig {
             name: "SmallSeq".into(),
@@ -374,9 +375,9 @@ fn main() -> gpdb::Result<()> {
         );
         for cfg in &mut configs {
             cfg.num_writes = (cfg.num_writes / 10).max(1);
-            cfg.num_overwrites = (cfg.num_overwrites / 10).max(0);
+            cfg.num_overwrites /= 10;
             cfg.num_reads = (cfg.num_reads / 10).max(1);
-            cfg.num_deletes = (cfg.num_deletes / 10).max(0);
+            cfg.num_deletes /= 10;
             cfg.threads = cfg.threads.min(2);
         }
     }

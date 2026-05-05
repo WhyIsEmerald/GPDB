@@ -99,6 +99,10 @@ where
     pub fn len(&self) -> usize {
         self.meta.num_entries as usize
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     pub fn file_size(&self) -> u64 {
         self.file_size
     }

@@ -10,6 +10,7 @@ pub struct LatStats {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct TouchStats {
     pub mean: f64,
     pub p50: f64,
@@ -20,7 +21,7 @@ pub struct TouchStats {
 
 impl LatStats {
     pub fn fmt_brief(&self) -> (String, String, String, String, String) {
-        use crate::utils::{format_f64_short};
+        use crate::db_bench_impl::utils::{format_f64_short};
         (
             format_f64_short(self.mean_us),
             format_f64_short(self.p50_us),

@@ -28,7 +28,7 @@ fn format_kb(bytes: u64) -> String {
     let kb_cents = (kb * 100.0).round() as i64;
     let int_part = (kb_cents / 100) as usize;
     let frac = (kb_cents.abs() % 100) as usize;
-    format!("{}.{}", format_usize(int_part), format!("{:02}", frac))
+    format!("{}.{:02}", format_usize(int_part), frac)
 }
 
 struct SpaceTestConfig {

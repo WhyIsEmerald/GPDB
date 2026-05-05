@@ -101,7 +101,7 @@ impl<K, V> DataBlock<K, V> {
         let mut iter = self.iter_borrowed();
         iter.seek_to_offset(self.restart_points[start_index] as usize);
 
-        while let Some(entry) = iter.next() {
+        for entry in iter {
             match entry.key.as_ref().cmp(target) {
                 std::cmp::Ordering::Equal => return Some(entry.value),
                 std::cmp::Ordering::Greater => return None,
@@ -145,7 +145,7 @@ where
 
         let mut shared = 0;
 
-        if self.count % RESTART_INTERVAL == 0 {
+        if self.count.is_multiple_of(RESTART_INTERVAL) {
             self.restart_points.push(self.data.len() as u32);
         } else {
             let min_len = std::cmp::min(self.last_key_bytes.len(), key_bytes.len());

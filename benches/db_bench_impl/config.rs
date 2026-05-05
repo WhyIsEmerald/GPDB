@@ -21,7 +21,7 @@ impl KeyPattern {
         match *self {
             KeyPattern::Sequential => format!("key-{:0width$}", idx, width = pad),
             KeyPattern::SimpleRandom => {
-                let r = crate::utils::lcg(idx);
+                let r = crate::db_bench_impl::utils::lcg(idx);
                 format!("key-{:0width$}", r % 1_000_000_000usize, width = pad)
             }
             KeyPattern::Striped(stripes) => {

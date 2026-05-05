@@ -58,10 +58,8 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if let Some(iter) = &mut self.current_iter {
-                if let Some(entry) = iter.next() {
-                    return Some(Ok(entry));
-                }
+            if let Some(entry) = self.current_iter.as_mut().and_then(|iter| iter.next()) {
+                return Some(Ok(entry));
             }
 
             match self.load_next_block() {

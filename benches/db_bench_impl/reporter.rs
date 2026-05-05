@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use crate::metrics::Metrics;
+use crate::db_bench_impl::metrics::Metrics;
 use colored::Colorize;
 
 pub struct Reporter {
@@ -24,7 +24,7 @@ impl Reporter {
     }
 
     pub fn finalize(&mut self, db_path: &Path, raw_bytes: u64) -> gpdb::Result<()> {
-        use crate::utils::count_disk_usage;
+        use crate::db_bench_impl::utils::count_disk_usage;
 
         let dirty = self
             .results
@@ -86,8 +86,8 @@ impl Reporter {
 
         for m in &self.results {
             let phase = format!("{:<28}", m.name);
-            let ops = format!("{:>12}", crate::utils::format_usize(m.total_ops as u64));
-            let speed = format!("{:>14}", crate::utils::format_f64_short(m.ops_per_sec()));
+            let ops = format!("{:>12}", crate::db_bench_impl::utils::format_usize(m.total_ops as u64));
+            let speed = format!("{:>14}", crate::db_bench_impl::utils::format_f64_short(m.ops_per_sec()));
 
             let (mean_s, p50_s, p90_s, p95_s, p99_s) = if let Some(ref l) = m.lat {
                 let (a, b, c, d, e) = l.fmt_brief();
@@ -99,7 +99,7 @@ impl Reporter {
                     format!("{:>9}", e),
                 )
             } else {
-                let mean = crate::utils::format_f64_short(m.mean_latency_us());
+                let mean = crate::db_bench_impl::utils::format_f64_short(m.mean_latency_us());
                 (
                     format!("{:>9}", mean),
                     format!("{:>9}", "-"),
@@ -109,12 +109,12 @@ impl Reporter {
                 )
             };
 
-            let ssts = format!("{:>6}", crate::utils::format_usize(m.sst_count as u64));
+            let ssts = format!("{:>6}", crate::db_bench_impl::utils::format_usize(m.sst_count as u64));
 
             let (tp50, tp99) = if let Some(ref t) = m.touch {
                 (
-                    format!("{:>8}", crate::utils::format_f64_short(t.p50)),
-                    format!("{:>8}", crate::utils::format_f64_short(t.p99)),
+                    format!("{:>8}", crate::db_bench_impl::utils::format_f64_short(t.p50)),
+                    format!("{:>8}", crate::db_bench_impl::utils::format_f64_short(t.p99)),
                 )
             } else {
                 (format!("{:>8}", "-"), format!("{:>8}", "-"))
@@ -135,7 +135,7 @@ impl Reporter {
 
             let line = format!(
                 "{:<28} | {:>12} | {:>14} | {:>9} | {:>9} | {:>9} | {:>9} | {:>9} | {:>6} | {:>8} | {:>8} | {:>10} | {:>10} | {:>10} | {:>10.2} | {:>12}",
-                phase, ops, speed, mean_s, p50_s, p90_s, p95_s, p99_s, ssts, tp50, tp99, acc, ripct_s, abs_s, m.cache_hit_rate, crate::utils::format_usize(m.filter_avoided_io)
+                phase, ops, speed, mean_s, p50_s, p90_s, p95_s, p99_s, ssts, tp50, tp99, acc, ripct_s, abs_s, m.cache_hit_rate, crate::db_bench_impl::utils::format_usize(m.filter_avoided_io)
             );
 
             writeln!(f, "{}", line)?;
@@ -146,8 +146,8 @@ impl Reporter {
             "{} {} (Raw: {} MB, On-disk: {} MB)",
             "Space Amplification:".bold(),
             format!("{:.2}x", space_amp).bright_magenta(),
-            crate::utils::format_f64_short(raw_bytes as f64 / 1024.0 / 1024.0),
-            crate::utils::format_f64_short(on_disk as f64 / 1024.0 / 1024.0)
+            crate::db_bench_impl::utils::format_f64_short(raw_bytes as f64 / 1024.0 / 1024.0),
+            crate::db_bench_impl::utils::format_f64_short(on_disk as f64 / 1024.0 / 1024.0)
         );
 
         Ok(())

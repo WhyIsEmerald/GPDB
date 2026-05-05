@@ -90,12 +90,8 @@ where
             }
         }
 
-        loop {
-            if let Some(peeked) = self.heap.peek() {
-                if peeked.entry.key != winner.entry.key {
-                    break;
-                }
-            } else {
+        while let Some(peeked) = self.heap.peek() {
+            if peeked.entry.key != winner.entry.key {
                 break;
             }
 

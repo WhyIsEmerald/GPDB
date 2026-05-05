@@ -53,7 +53,7 @@ impl Compactor {
         V: Serialize + DeserializeOwned + Send + Sync + 'static,
     {
         let stream = MergeStream::new(sstables)?;
-        
+
         if target_level == crate::db::database::MAX_LEVEL {
             let filtered_stream = stream.filter(|res| {
                 if let Ok(entry) = res {
@@ -62,7 +62,13 @@ impl Compactor {
                     true
                 }
             });
-            SSTable::write_from_iter(output_path, filtered_stream, new_id, target_level, block_cache)
+            SSTable::write_from_iter(
+                output_path,
+                filtered_stream,
+                new_id,
+                target_level,
+                block_cache,
+            )
         } else {
             SSTable::write_from_iter(output_path, stream, new_id, target_level, block_cache)
         }
@@ -97,7 +103,8 @@ impl Compactor {
                     target_level,
                     block_cache,
                 } => {
-                    let result = Self::compact(&sstables, &output_path, next_id, target_level, block_cache);
+                    let result =
+                        Self::compact(&sstables, &output_path, next_id, target_level, block_cache);
                     match result {
                         Ok(sstable) => {
                             sender

@@ -157,8 +157,10 @@ where
         let unshared = key_bytes.len() - shared;
 
         self.data.extend_from_slice(&(shared as u32).to_le_bytes());
-        self.data.extend_from_slice(&(unshared as u32).to_le_bytes());
-        self.data.extend_from_slice(&(val_bytes.len() as u32).to_le_bytes());
+        self.data
+            .extend_from_slice(&(unshared as u32).to_le_bytes());
+        self.data
+            .extend_from_slice(&(val_bytes.len() as u32).to_le_bytes());
         self.data.extend_from_slice(&key_bytes[shared..]);
         self.data.extend_from_slice(&val_bytes);
 

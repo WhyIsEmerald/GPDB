@@ -17,7 +17,10 @@ use std::fs::File;
 use std::io::BufReader;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 
 pub const FORMAT_VERSION: u32 = 1;
 pub const FOOTER_SIZE: u64 = 64;

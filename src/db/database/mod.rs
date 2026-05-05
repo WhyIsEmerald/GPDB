@@ -161,7 +161,11 @@ where
             let entry = entry?;
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("wal") {
-                if let Some(id) = path.file_stem().and_then(|s| s.to_str()).and_then(|n| n.parse::<u64>().ok()) {
+                if let Some(id) = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .and_then(|n| n.parse::<u64>().ok())
+                {
                     wal_files.push((id, path));
                 }
             }
@@ -361,7 +365,9 @@ where
 
     pub fn bloom_filter_avoided_io(&self) -> u64 {
         let version = self.version.load();
-        version.levels.iter()
+        version
+            .levels
+            .iter()
             .flat_map(|l| l.iter())
             .map(|s| s.filter_stats().1)
             .sum()
@@ -369,9 +375,12 @@ where
 
     pub fn block_cache_stats(&self) -> (u64, u64) {
         (
-            self.block_cache.hits.load(std::sync::atomic::Ordering::Relaxed),
-            self.block_cache.misses.load(std::sync::atomic::Ordering::Relaxed),
+            self.block_cache
+                .hits
+                .load(std::sync::atomic::Ordering::Relaxed),
+            self.block_cache
+                .misses
+                .load(std::sync::atomic::Ordering::Relaxed),
         )
     }
-
 }

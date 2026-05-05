@@ -26,9 +26,9 @@ pub fn format_f64_short(v: f64) -> String {
     } else {
         let rounded = v.round() as i128;
         if rounded < 0 {
-            format!("-{}",                 format_usize((-rounded) as u64))
+            format!("-{}", format_usize((-rounded) as u64))
         } else {
-                format_usize(rounded as u64)
+            format_usize(rounded as u64)
         }
     }
 }

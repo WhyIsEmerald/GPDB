@@ -118,9 +118,20 @@ fn run_read_phase(
 
 fn run_full_benchmark(cfg: &BenchConfig) -> gpdb::Result<()> {
     println!();
-    println!("{}", "==============================================================".dimmed());
-    println!("{}", format!("=== Running config: {} ===", cfg.name).bold().cyan());
-    println!("{}", "--------------------------------------------------------------".dimmed());
+    println!(
+        "{}",
+        "==============================================================".dimmed()
+    );
+    println!(
+        "{}",
+        format!("=== Running config: {} ===", cfg.name)
+            .bold()
+            .cyan()
+    );
+    println!(
+        "{}",
+        "--------------------------------------------------------------".dimmed()
+    );
 
     fs::create_dir_all("logs")?;
     fs::create_dir_all("bench_data")?;
@@ -167,7 +178,8 @@ fn run_full_benchmark(cfg: &BenchConfig) -> gpdb::Result<()> {
         let mut samples = Vec::with_capacity(cfg.num_overwrites);
         let start = Instant::now();
         for i in 0..cfg.num_overwrites {
-            let target = utils::lcg(i).wrapping_mul(1664525).wrapping_add(1013904223) % cfg.num_writes;
+            let target =
+                utils::lcg(i).wrapping_mul(1664525).wrapping_add(1013904223) % cfg.num_writes;
             let key = cfg.pattern.generate(target, cfg.key_size);
             let val = format!("upd{:0width$}", target, width = cfg.val_size);
             let t0 = Instant::now();
@@ -253,18 +265,17 @@ fn run_full_benchmark(cfg: &BenchConfig) -> gpdb::Result<()> {
             db.delete(key)?;
             samples.push(t0.elapsed().as_micros());
         }
-    reporter.record(Metrics {
-        name: "Random Deletions".into(),
-        total_ops: cfg.num_deletes,
-        duration: start.elapsed(),
-        sst_count: db.total_sst_count(),
-        accuracy: 100.0,
-        filter_avoided_io: 0,
-        lat: calculate_lat_stats(samples),
-        touch: None,
-        cache_hit_rate: 0.0,
-    })?;
-
+        reporter.record(Metrics {
+            name: "Random Deletions".into(),
+            total_ops: cfg.num_deletes,
+            duration: start.elapsed(),
+            sst_count: db.total_sst_count(),
+            accuracy: 100.0,
+            filter_avoided_io: 0,
+            lat: calculate_lat_stats(samples),
+            touch: None,
+            cache_hit_rate: 0.0,
+        })?;
     }
 
     let start = Instant::now();

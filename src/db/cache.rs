@@ -41,10 +41,10 @@ where
             .weigher(|_key, block: &Arc<DataBlock<K, V>>| block.data.len() as u32)
             .build();
 
-        Self { 
-            cache, 
-            hits: AtomicU64::new(0), 
-            misses: AtomicU64::new(0) 
+        Self {
+            cache,
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
         }
     }
 

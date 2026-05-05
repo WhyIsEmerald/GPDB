@@ -18,18 +18,30 @@ where
         let key_arc = Arc::new(key.clone());
         if let Some(entry) = self.memtable.load().get_entry(&key_arc) {
             if entry.is_tombstone {
-                return Ok(ReadResult { value: None, sstables_touched: 0 });
+                return Ok(ReadResult {
+                    value: None,
+                    sstables_touched: 0,
+                });
             }
-            return Ok(ReadResult { value: entry.value, sstables_touched: 0 });
+            return Ok(ReadResult {
+                value: entry.value,
+                sstables_touched: 0,
+            });
         }
 
         let version = self.version.load();
         for imm in version.immutables.iter().rev() {
             if let Some(entry) = imm.memtable.get_entry(&key_arc) {
                 if entry.is_tombstone {
-                    return Ok(ReadResult { value: None, sstables_touched: 0 });
+                    return Ok(ReadResult {
+                        value: None,
+                        sstables_touched: 0,
+                    });
                 }
-                return Ok(ReadResult { value: entry.value, sstables_touched: 0 });
+                return Ok(ReadResult {
+                    value: entry.value,
+                    sstables_touched: 0,
+                });
             }
         }
 
@@ -39,12 +51,21 @@ where
                 touched += 1;
                 if let Some(val_entry) = sstable.get(key)? {
                     if val_entry.is_tombstone {
-                        return Ok(ReadResult { value: None, sstables_touched: touched });
+                        return Ok(ReadResult {
+                            value: None,
+                            sstables_touched: touched,
+                        });
                     }
-                    return Ok(ReadResult { value: val_entry.value, sstables_touched: touched });
+                    return Ok(ReadResult {
+                        value: val_entry.value,
+                        sstables_touched: touched,
+                    });
                 }
             }
         }
-        Ok(ReadResult { value: None, sstables_touched: touched })
+        Ok(ReadResult {
+            value: None,
+            sstables_touched: touched,
+        })
     }
 }

@@ -1,8 +1,8 @@
+use crate::db_bench_impl::metrics::Metrics;
+use colored::Colorize;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use crate::db_bench_impl::metrics::Metrics;
-use colored::Colorize;
 
 pub struct Reporter {
     pub results: Vec<Metrics>,
@@ -59,26 +59,25 @@ impl Reporter {
             0.0
         };
 
-    let header = format!(
-        "{:<28} | {:>12} | {:>14} | {:>9} | {:>9} | {:>9} | {:>9} | {:>9} | {:>6} | {:>8} | {:>8} | {:>10} | {:>10} | {:>10} | {:>10} | {:>12}",
-        "Phase",
-        "Ops",
-        "Speed (ops/s)",
-        "Mean μs",
-        "p50 μs",
-        "p90 μs",
-        "p95 μs",
-        "p99 μs",
-        "SSTs",
-        "T p50",
-        "T p99",
-        "Accuracy(%)",
-        "ReadImp(%)",
-        "Δμs",
-        "Cache Hit%",
-        "Avoided I/O"
-    );
-
+        let header = format!(
+            "{:<28} | {:>12} | {:>14} | {:>9} | {:>9} | {:>9} | {:>9} | {:>9} | {:>6} | {:>8} | {:>8} | {:>10} | {:>10} | {:>10} | {:>10} | {:>12}",
+            "Phase",
+            "Ops",
+            "Speed (ops/s)",
+            "Mean μs",
+            "p50 μs",
+            "p90 μs",
+            "p95 μs",
+            "p99 μs",
+            "SSTs",
+            "T p50",
+            "T p99",
+            "Accuracy(%)",
+            "ReadImp(%)",
+            "Δμs",
+            "Cache Hit%",
+            "Avoided I/O"
+        );
 
         let mut f = File::create(&self.log_file_path)?;
         writeln!(f, "{}", header)?;
@@ -86,8 +85,14 @@ impl Reporter {
 
         for m in &self.results {
             let phase = format!("{:<28}", m.name);
-            let ops = format!("{:>12}", crate::db_bench_impl::utils::format_usize(m.total_ops as u64));
-            let speed = format!("{:>14}", crate::db_bench_impl::utils::format_f64_short(m.ops_per_sec()));
+            let ops = format!(
+                "{:>12}",
+                crate::db_bench_impl::utils::format_usize(m.total_ops as u64)
+            );
+            let speed = format!(
+                "{:>14}",
+                crate::db_bench_impl::utils::format_f64_short(m.ops_per_sec())
+            );
 
             let (mean_s, p50_s, p90_s, p95_s, p99_s) = if let Some(ref l) = m.lat {
                 let (a, b, c, d, e) = l.fmt_brief();
@@ -109,12 +114,21 @@ impl Reporter {
                 )
             };
 
-            let ssts = format!("{:>6}", crate::db_bench_impl::utils::format_usize(m.sst_count as u64));
+            let ssts = format!(
+                "{:>6}",
+                crate::db_bench_impl::utils::format_usize(m.sst_count as u64)
+            );
 
             let (tp50, tp99) = if let Some(ref t) = m.touch {
                 (
-                    format!("{:>8}", crate::db_bench_impl::utils::format_f64_short(t.p50)),
-                    format!("{:>8}", crate::db_bench_impl::utils::format_f64_short(t.p99)),
+                    format!(
+                        "{:>8}",
+                        crate::db_bench_impl::utils::format_f64_short(t.p50)
+                    ),
+                    format!(
+                        "{:>8}",
+                        crate::db_bench_impl::utils::format_f64_short(t.p99)
+                    ),
                 )
             } else {
                 (format!("{:>8}", "-"), format!("{:>8}", "-"))
@@ -135,7 +149,22 @@ impl Reporter {
 
             let line = format!(
                 "{:<28} | {:>12} | {:>14} | {:>9} | {:>9} | {:>9} | {:>9} | {:>9} | {:>6} | {:>8} | {:>8} | {:>10} | {:>10} | {:>10} | {:>10.2} | {:>12}",
-                phase, ops, speed, mean_s, p50_s, p90_s, p95_s, p99_s, ssts, tp50, tp99, acc, ripct_s, abs_s, m.cache_hit_rate, crate::db_bench_impl::utils::format_usize(m.filter_avoided_io)
+                phase,
+                ops,
+                speed,
+                mean_s,
+                p50_s,
+                p90_s,
+                p95_s,
+                p99_s,
+                ssts,
+                tp50,
+                tp99,
+                acc,
+                ripct_s,
+                abs_s,
+                m.cache_hit_rate,
+                crate::db_bench_impl::utils::format_usize(m.filter_avoided_io)
             );
 
             writeln!(f, "{}", line)?;

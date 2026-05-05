@@ -1,6 +1,6 @@
 use gpdb::{SSTable, SSTableId};
-use std::time::Instant;
 use std::sync::Arc;
+use std::time::Instant;
 use tempfile::TempDir;
 
 fn main() -> gpdb::Result<()> {
@@ -19,8 +19,11 @@ fn main() -> gpdb::Result<()> {
 
     let mut false_positives = 0;
     let test_reads = 100_000;
-    
-    println!("Measuring Bloom Filter False Positive Rate for {} keys...", num_keys);
+
+    println!(
+        "Measuring Bloom Filter False Positive Rate for {} keys...",
+        num_keys
+    );
     let start = Instant::now();
     for i in num_keys..num_keys + test_reads {
         let key = format!("non-existent-key-{}", i).to_string();

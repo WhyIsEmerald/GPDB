@@ -17,7 +17,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}};
 
 pub const FORMAT_VERSION: u32 = 1;
 pub const FOOTER_SIZE: u64 = 64;
@@ -39,6 +39,8 @@ where
     pub(crate) filter_offset: u64,
     pub(crate) index_offset: u64,
     pub(crate) file_size: u64,
+    pub(crate) filter_hits: Arc<AtomicU64>,
+    pub(crate) filter_misses: Arc<AtomicU64>,
     pub(crate) block_cache: Option<Arc<crate::db::cache::BlockCache<K, V>>>,
     pub(crate) _phantom: PhantomData<(K, V)>,
 }
@@ -60,6 +62,8 @@ where
             filter_offset: self.filter_offset,
             index_offset: self.index_offset,
             file_size: self.file_size,
+            filter_hits: Arc::clone(&self.filter_hits),
+            filter_misses: Arc::clone(&self.filter_misses),
             block_cache: self.block_cache.as_ref().map(Arc::clone),
             _phantom: PhantomData,
         }
@@ -77,6 +81,13 @@ where
 
     pub fn filter(&self) -> &FilterVariant {
         &self.filter
+    }
+
+    pub fn filter_stats(&self) -> (u64, u64) {
+        (
+            self.filter_hits.load(Ordering::Relaxed),
+            self.filter_misses.load(Ordering::Relaxed),
+        )
     }
 
     pub fn path(&self) -> &Path {

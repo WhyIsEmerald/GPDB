@@ -12,6 +12,7 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicU64;
 use xorf::{Xor8, Xor16};
 
 impl<K, V> SSTable<K, V>
@@ -101,6 +102,8 @@ where
             filter_offset,
             index_offset,
             file_size: file_len,
+            filter_hits: Arc::new(AtomicU64::new(0)),
+            filter_misses: Arc::new(AtomicU64::new(0)),
             block_cache,
             _phantom: PhantomData,
         })
@@ -113,8 +116,10 @@ where
 
         let key_hash = self.hash_key(key);
         if !self.filter.contains(&key_hash) {
+            self.filter_misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Ok(None);
         }
+        self.filter_hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let block_offset = match self.index.range(..=key.clone()).next_back() {
             Some((_, offset)) => *offset,

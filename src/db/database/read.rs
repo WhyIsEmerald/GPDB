@@ -3,40 +3,48 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::sync::Arc;
 
+#[derive(Debug, Serialize)]
+pub struct ReadResult<V> {
+    pub value: Option<Arc<V>>,
+    pub sstables_touched: usize,
+}
+
 impl<K, V> DB<K, V>
 where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
     V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
 {
-    pub fn get(&self, key: &K) -> Result<Option<Arc<V>>> {
+    pub fn get(&self, key: &K) -> Result<ReadResult<V>> {
         let key_arc = Arc::new(key.clone());
         if let Some(entry) = self.memtable.load().get_entry(&key_arc) {
             if entry.is_tombstone {
-                return Ok(None);
+                return Ok(ReadResult { value: None, sstables_touched: 0 });
             }
-            return Ok(entry.value);
+            return Ok(ReadResult { value: entry.value, sstables_touched: 0 });
         }
 
         let version = self.version.load();
         for imm in version.immutables.iter().rev() {
             if let Some(entry) = imm.memtable.get_entry(&key_arc) {
                 if entry.is_tombstone {
-                    return Ok(None);
+                    return Ok(ReadResult { value: None, sstables_touched: 0 });
                 }
-                return Ok(entry.value);
+                return Ok(ReadResult { value: entry.value, sstables_touched: 0 });
             }
         }
 
+        let mut touched = 0;
         for level in &version.levels {
             for sstable in level.iter().rev() {
+                touched += 1;
                 if let Some(val_entry) = sstable.get(key)? {
                     if val_entry.is_tombstone {
-                        return Ok(None);
+                        return Ok(ReadResult { value: None, sstables_touched: touched });
                     }
-                    return Ok(val_entry.value);
+                    return Ok(ReadResult { value: val_entry.value, sstables_touched: touched });
                 }
             }
         }
-        Ok(None)
+        Ok(ReadResult { value: None, sstables_touched: touched })
     }
 }

@@ -18,6 +18,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc;
 
 pub(crate) const MANIFEST_FILE_NAME: &str = "MANIFEST";
+pub(crate) const MAX_LEVEL: usize = 7;
 
 /// An immutable point-in-time view of the database's SSTables and Immutable MemTables.
 #[derive(Debug)]
@@ -269,6 +270,7 @@ where
         sstables: Vec<SSTable<K, V>>,
         target_level: usize,
     ) {
+        let target_level = target_level.min(MAX_LEVEL);
         for sst in &sstables {
             state.compacting_ids.insert(sst.id());
         }
@@ -355,4 +357,20 @@ where
         let version = self.version.load();
         version.levels.iter().map(|l| l.len()).sum()
     }
+
+    pub fn bloom_filter_avoided_io(&self) -> u64 {
+        let version = self.version.load();
+        version.levels.iter()
+            .flat_map(|l| l.iter())
+            .map(|s| s.filter_stats().1)
+            .sum()
+    }
+
+    pub fn block_cache_stats(&self) -> (u64, u64) {
+        (
+            self.block_cache.hits.load(std::sync::atomic::Ordering::Relaxed),
+            self.block_cache.misses.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
 }

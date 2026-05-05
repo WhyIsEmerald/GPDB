@@ -188,16 +188,20 @@ where
                         }
 
                         if let Some(resp) = next_rotate {
-                            let old_id = current_id;
-                            current_id += 1;
-                            let new_path = dir.join(format!("{:06}.wal", current_id));
-                            match Wal::create(&new_path) {
-                                Ok(new_wal) => {
-                                    wal = new_wal;
-                                    let _ = resp.send(Ok(old_id));
-                                }
-                                Err(e) => {
-                                    let _ = resp.send(Err(e));
+                            if let Err(e) = result {
+                                let _ = resp.send(Err(e));
+                            } else {
+                                let old_id = current_id;
+                                current_id += 1;
+                                let new_path = dir.join(format!("{:06}.wal", current_id));
+                                match Wal::create(&new_path) {
+                                    Ok(new_wal) => {
+                                        wal = new_wal;
+                                        let _ = resp.send(Ok(old_id));
+                                    }
+                                    Err(e) => {
+                                        let _ = resp.send(Err(e));
+                                    }
                                 }
                             }
                         }

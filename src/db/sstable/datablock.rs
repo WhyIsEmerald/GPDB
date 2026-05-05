@@ -27,10 +27,19 @@ impl<K, V> DataBlock<K, V> {
         }
     }
 
-    pub fn iter(&self) -> DataBlockIterator<'_, K, V> {
+    pub fn iter(self: &Arc<Self>) -> DataBlockIterator<K, V> {
         DataBlockIterator {
+            block: Arc::clone(self),
+            position: 0,
+            last_key_bytes: Vec::new(),
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn iter_borrowed(&self) -> BorrowingDataBlockIterator<'_, K, V> {
+        BorrowingDataBlockIterator {
             block: self,
-            cursor: Cursor::new(&self.data),
+            position: 0,
             last_key_bytes: Vec::new(),
             _phantom: PhantomData,
         }
@@ -54,7 +63,6 @@ impl<K, V> DataBlock<K, V> {
             let mid = (left + right) / 2;
             let offset = self.restart_points[mid] as usize;
 
-            // Decode full key at restart point
             let mut cursor = Cursor::new(&self.data[offset..]);
             let mut buf_4 = [0u8; 4];
             cursor.read_exact(&mut buf_4).ok()?;
@@ -64,7 +72,6 @@ impl<K, V> DataBlock<K, V> {
             cursor.read_exact(&mut buf_4).ok()?;
             let _val_len = u32::from_le_bytes(buf_4);
 
-            // Restart points MUST have shared == 0
             if shared != 0 {
                 return None;
             }
@@ -91,10 +98,10 @@ impl<K, V> DataBlock<K, V> {
             }
         }
 
-        let mut iter = self.iter();
+        let mut iter = self.iter_borrowed();
         iter.seek_to_offset(self.restart_points[start_index] as usize);
 
-        while let Some(entry) = iter.next() {
+        for entry in iter {
             match entry.key.as_ref().cmp(target) {
                 std::cmp::Ordering::Equal => return Some(entry.value),
                 std::cmp::Ordering::Greater => return None,
@@ -132,17 +139,15 @@ where
         }
     }
 
-    /// Adds an entry using prefix compression.
     pub fn add(&mut self, key: &K, value: &ValueEntry<V>) {
         let key_bytes = bincode::serialize(key).unwrap_or_default();
         let val_bytes = bincode::serialize(value).unwrap_or_default();
 
         let mut shared = 0;
 
-        if self.count % RESTART_INTERVAL == 0 {
+        if self.count.is_multiple_of(RESTART_INTERVAL) {
             self.restart_points.push(self.data.len() as u32);
         } else {
-            // Calculate shared prefix length
             let min_len = std::cmp::min(self.last_key_bytes.len(), key_bytes.len());
             while shared < min_len && self.last_key_bytes[shared] == key_bytes[shared] {
                 shared += 1;
@@ -151,7 +156,6 @@ where
 
         let unshared = key_bytes.len() - shared;
 
-        // [shared: u32][unshared: u32][val_len: u32][suffix][value]
         self.data.extend_from_slice(&(shared as u32).to_le_bytes());
         self.data
             .extend_from_slice(&(unshared as u32).to_le_bytes());
@@ -181,22 +185,21 @@ where
     }
 }
 
-/// Iterator for reconstructing delta-encoded entries.
-pub struct DataBlockIterator<'a, K, V> {
-    block: &'a DataBlock<K, V>,
-    cursor: Cursor<&'a Vec<u8>>,
+pub struct DataBlockIterator<K, V> {
+    block: Arc<DataBlock<K, V>>,
+    position: usize,
     last_key_bytes: Vec<u8>,
     _phantom: PhantomData<(K, V)>,
 }
 
-impl<'a, K, V> DataBlockIterator<'a, K, V> {
+impl<K, V> DataBlockIterator<K, V> {
     pub fn seek_to_offset(&mut self, offset: usize) {
-        self.cursor.set_position(offset as u64);
+        self.position = offset;
         self.last_key_bytes.clear();
     }
 }
 
-impl<'a, K, V> Iterator for DataBlockIterator<'a, K, V>
+impl<K, V> Iterator for DataBlockIterator<K, V>
 where
     K: DBKey,
     V: serde::de::DeserializeOwned,
@@ -204,34 +207,93 @@ where
     type Item = crate::Entry<K, V>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.cursor.position() as usize >= self.block.data.len() {
+        if self.position >= self.block.data.len() {
             return None;
         }
 
-        let mut buf_4 = [0u8; 4];
+        let mut read_bytes = |len: usize| -> Option<&[u8]> {
+            if self.position + len > self.block.data.len() {
+                return None;
+            }
+            let slice = &self.block.data[self.position..self.position + len];
+            self.position += len;
+            Some(slice)
+        };
 
-        self.cursor.read_exact(&mut buf_4).ok()?;
-        let shared = u32::from_le_bytes(buf_4) as usize;
-
-        self.cursor.read_exact(&mut buf_4).ok()?;
-        let unshared = u32::from_le_bytes(buf_4) as usize;
-
-        self.cursor.read_exact(&mut buf_4).ok()?;
-        let val_len = u32::from_le_bytes(buf_4) as usize;
+        let shared = u32::from_le_bytes(read_bytes(4)?.try_into().ok()?) as usize;
+        let unshared = u32::from_le_bytes(read_bytes(4)?.try_into().ok()?) as usize;
+        let val_len = u32::from_le_bytes(read_bytes(4)?.try_into().ok()?) as usize;
 
         let mut key_bytes = Vec::with_capacity(shared + unshared);
         if shared > 0 {
             key_bytes.extend_from_slice(&self.last_key_bytes[..shared]);
         }
-        let mut suffix = vec![0u8; unshared];
-        self.cursor.read_exact(&mut suffix).ok()?;
-        key_bytes.extend_from_slice(&suffix);
+        let suffix = read_bytes(unshared)?;
+        key_bytes.extend_from_slice(suffix);
 
-        let mut val_bytes = vec![0u8; val_len];
-        self.cursor.read_exact(&mut val_bytes).ok()?;
+        let val_bytes = read_bytes(val_len)?;
 
         let key: K = bincode::deserialize(&key_bytes).ok()?;
-        let value: ValueEntry<V> = bincode::deserialize(&val_bytes).ok()?;
+        let value: ValueEntry<V> = bincode::deserialize(val_bytes).ok()?;
+
+        self.last_key_bytes = key_bytes;
+        Some(crate::Entry {
+            key: Arc::new(key),
+            value,
+        })
+    }
+}
+
+pub struct BorrowingDataBlockIterator<'a, K, V> {
+    block: &'a DataBlock<K, V>,
+    position: usize,
+    last_key_bytes: Vec<u8>,
+    _phantom: PhantomData<(K, V)>,
+}
+
+impl<'a, K, V> BorrowingDataBlockIterator<'a, K, V> {
+    pub fn seek_to_offset(&mut self, offset: usize) {
+        self.position = offset;
+        self.last_key_bytes.clear();
+    }
+}
+
+impl<'a, K, V> Iterator for BorrowingDataBlockIterator<'a, K, V>
+where
+    K: DBKey,
+    V: serde::de::DeserializeOwned,
+{
+    type Item = crate::Entry<K, V>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.position >= self.block.data.len() {
+            return None;
+        }
+
+        let mut read_bytes = |len: usize| -> Option<&[u8]> {
+            if self.position + len > self.block.data.len() {
+                return None;
+            }
+            let slice = &self.block.data[self.position..self.position + len];
+            self.position += len;
+            Some(slice)
+        };
+
+        let shared = u32::from_le_bytes(read_bytes(4)?.try_into().ok()?) as usize;
+        let unshared = u32::from_le_bytes(read_bytes(4)?.try_into().ok()?) as usize;
+        let val_len = u32::from_le_bytes(read_bytes(4)?.try_into().ok()?) as usize;
+
+        let mut key_bytes = Vec::with_capacity(shared + unshared);
+        if shared > 0 {
+            key_bytes.extend_from_slice(&self.last_key_bytes[..shared]);
+        }
+        let suffix = read_bytes(unshared)?;
+        key_bytes.extend_from_slice(suffix);
+
+        let val_bytes = read_bytes(val_len)?;
+
+        let key: K = bincode::deserialize(&key_bytes).ok()?;
+        let value: ValueEntry<V> = bincode::deserialize(val_bytes).ok()?;
 
         self.last_key_bytes = key_bytes;
         Some(crate::Entry {

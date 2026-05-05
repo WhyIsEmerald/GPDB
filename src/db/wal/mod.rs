@@ -1,6 +1,6 @@
 use crate::db::io::{read_record, write_record};
 use crate::{DBKey, Error, LogEntry, Result};
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{Sender, unbounded};
 use serde::{Serialize, de::DeserializeOwned};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
@@ -40,7 +40,7 @@ where
     }
 
     pub fn open(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new().write(true).append(true).open(path)?;
+        let file = OpenOptions::new().append(true).open(path)?;
 
         Ok(Wal {
             path: path.to_path_buf(),
@@ -133,7 +133,7 @@ where
     V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     pub fn new(dir: PathBuf, mut current_id: u64) -> Result<Self> {
-        let (task_tx, task_rx): (Sender<WalTask<K, V>>, Receiver<WalTask<K, V>>) = unbounded();
+        let (task_tx, task_rx) = unbounded::<WalTask<K, V>>();
 
         let wal_path = dir.join(format!("{:06}.wal", current_id));
         let mut wal = if wal_path.exists() {
@@ -188,16 +188,20 @@ where
                         }
 
                         if let Some(resp) = next_rotate {
-                            let old_id = current_id;
-                            current_id += 1;
-                            let new_path = dir.join(format!("{:06}.wal", current_id));
-                            match Wal::create(&new_path) {
-                                Ok(new_wal) => {
-                                    wal = new_wal;
-                                    let _ = resp.send(Ok(old_id));
-                                }
-                                Err(e) => {
-                                    let _ = resp.send(Err(e));
+                            if let Err(e) = result {
+                                let _ = resp.send(Err(e));
+                            } else {
+                                let old_id = current_id;
+                                current_id += 1;
+                                let new_path = dir.join(format!("{:06}.wal", current_id));
+                                match Wal::create(&new_path) {
+                                    Ok(new_wal) => {
+                                        wal = new_wal;
+                                        let _ = resp.send(Ok(old_id));
+                                    }
+                                    Err(e) => {
+                                        let _ = resp.send(Err(e));
+                                    }
                                 }
                             }
                         }

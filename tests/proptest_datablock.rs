@@ -29,7 +29,7 @@ proptest! {
         }
 
         let block = builder.finish();
-        let recovered: Vec<_> = block.iter().collect();
+        let recovered: Vec<_> = Arc::new(block).iter().collect();
 
         prop_assert_eq!(recovered.len(), entries.len());
         for (idx, rec) in recovered.iter().enumerate() {
@@ -60,7 +60,7 @@ proptest! {
 
             if builder.is_full() {
                 let block = builder.finish();
-                let count = block.iter().count();
+                let count = Arc::new(block).iter().count();
                 prop_assert!(count > 0);
                 prop_assert!(count <= entries_written);
                 break;

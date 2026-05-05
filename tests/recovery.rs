@@ -66,6 +66,9 @@ fn recovery_with_orphan_sstables() {
 
     // Reopening should succeed and ignore the orphan file
     let db: DB<String, String> = DB::open(path, 1024).unwrap();
-    assert_eq!(db.get(&"k1".to_string()).unwrap().unwrap().as_str(), "v1");
+    assert_eq!(
+        db.get(&"k1".to_string()).unwrap().value.unwrap().as_str(),
+        "v1"
+    );
     assert!(db.total_sst_count() == 1);
 }

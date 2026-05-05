@@ -12,6 +12,16 @@ where
     map: SkipMap<Arc<K>, ValueEntry<V>>,
 }
 
+impl<K, V> Default for MemTable<K, V>
+where
+    K: DBKey + Send + Sync + 'static,
+    V: Send + Sync + 'static,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K, V> MemTable<K, V>
 where
     K: DBKey + Send + Sync + 'static,
@@ -55,6 +65,10 @@ where
             .iter()
             .filter(|entry| !entry.value().is_tombstone)
             .count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn clear(&self) {

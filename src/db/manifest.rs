@@ -24,7 +24,7 @@ impl Manifest {
     }
 
     pub fn open(path: PathBuf) -> Result<Self> {
-        let file = OpenOptions::new().write(true).append(true).open(&path)?;
+        let file = OpenOptions::new().append(true).open(&path)?;
         Ok(Manifest {
             path,
             writer: BufWriter::new(file),

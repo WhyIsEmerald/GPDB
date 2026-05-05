@@ -45,6 +45,7 @@ impl Compactor {
         sstables: &[SSTable<K, V>],
         output_path: &Path,
         new_id: SSTableId,
+        target_level: usize,
         block_cache: Option<Arc<BlockCache<K, V>>>,
     ) -> Result<SSTable<K, V>>
     where
@@ -52,8 +53,25 @@ impl Compactor {
         V: Serialize + DeserializeOwned + Send + Sync + 'static,
     {
         let stream = MergeStream::new(sstables)?;
-        let target_level = 1;
-        SSTable::write_from_iter(output_path, stream, new_id, target_level, block_cache)
+
+        if target_level == crate::db::database::MAX_LEVEL {
+            let filtered_stream = stream.filter(|res| {
+                if let Ok(entry) = res {
+                    !entry.value.is_tombstone
+                } else {
+                    true
+                }
+            });
+            SSTable::write_from_iter(
+                output_path,
+                filtered_stream,
+                new_id,
+                target_level,
+                block_cache,
+            )
+        } else {
+            SSTable::write_from_iter(output_path, stream, new_id, target_level, block_cache)
+        }
     }
 
     pub fn compact_l0<K, V>(
@@ -66,7 +84,7 @@ impl Compactor {
         K: DBKey + Send + Sync + 'static,
         V: Serialize + DeserializeOwned + Send + Sync + 'static,
     {
-        Self::compact(sstables, output_path, new_id, block_cache)
+        Self::compact(sstables, output_path, new_id, 0, block_cache)
     }
 
     pub fn run_worker<K, V>(
@@ -85,7 +103,8 @@ impl Compactor {
                     target_level,
                     block_cache,
                 } => {
-                    let result = Self::compact(&sstables, &output_path, next_id, block_cache);
+                    let result =
+                        Self::compact(&sstables, &output_path, next_id, target_level, block_cache);
                     match result {
                         Ok(sstable) => {
                             sender

@@ -18,6 +18,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc;
 
 pub(crate) const MANIFEST_FILE_NAME: &str = "MANIFEST";
+pub(crate) const MAX_LEVEL: usize = 7;
 
 /// An immutable point-in-time view of the database's SSTables and Immutable MemTables.
 #[derive(Debug)]
@@ -155,14 +156,17 @@ where
 
         // Discover and recover WALs
         let mut wal_files = Vec::new();
+        #[allow(clippy::collapsible_if)]
         for entry in std::fs::read_dir(path)? {
             let entry = entry?;
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("wal") {
-                if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-                    if let Ok(id) = name.parse::<u64>() {
-                        wal_files.push((id, path));
-                    }
+                if let Some(id) = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .and_then(|n| n.parse::<u64>().ok())
+                {
+                    wal_files.push((id, path));
                 }
             }
         }
@@ -209,8 +213,9 @@ where
         })
     }
 
-    pub fn handle_compaction_results(&self) -> Result<()> {
+    pub fn handle_compaction_results(&self) -> Result<usize> {
         let mut results = Vec::new();
+        let mut compacted_count = 0;
         {
             let state = self.compaction_state.lock();
             while let Ok(result) = state.compaction_rx.try_recv() {
@@ -218,7 +223,7 @@ where
             }
         }
         if results.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
 
         for result in results {
@@ -228,6 +233,7 @@ where
                     level,
                     original_sstables,
                 } => {
+                    compacted_count += original_sstables.len();
                     self.apply_compaction_success(sstable, level, original_sstables)?;
                 }
                 CompactionResult::Failure(e) => {
@@ -236,7 +242,7 @@ where
             }
         }
         self.check_all_compactions();
-        Ok(())
+        Ok(compacted_count)
     }
 
     fn check_all_compactions(&self) {
@@ -269,6 +275,7 @@ where
         sstables: Vec<SSTable<K, V>>,
         target_level: usize,
     ) {
+        let target_level = target_level.min(MAX_LEVEL);
         for sst in &sstables {
             state.compacting_ids.insert(sst.id());
         }
@@ -329,8 +336,8 @@ where
             }
             manifest.flush()?;
 
-            for l in 0..new_levels.len() {
-                new_levels[l].retain(|s| !removed_ids.contains(&s.id()));
+            for level_vec in &mut new_levels {
+                level_vec.retain(|s| !removed_ids.contains(&s.id()));
             }
             if level >= new_levels.len() {
                 new_levels.resize_with(level + 1, Vec::new);
@@ -354,5 +361,26 @@ where
     pub fn total_sst_count(&self) -> usize {
         let version = self.version.load();
         version.levels.iter().map(|l| l.len()).sum()
+    }
+
+    pub fn bloom_filter_avoided_io(&self) -> u64 {
+        let version = self.version.load();
+        version
+            .levels
+            .iter()
+            .flat_map(|l| l.iter())
+            .map(|s| s.filter_stats().1)
+            .sum()
+    }
+
+    pub fn block_cache_stats(&self) -> (u64, u64) {
+        (
+            self.block_cache
+                .hits
+                .load(std::sync::atomic::Ordering::Relaxed),
+            self.block_cache
+                .misses
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
     }
 }

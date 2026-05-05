@@ -1,17 +1,18 @@
 use crate::db::io::read_record;
-use crate::db::sstable::datablock::DataBlock;
+use crate::db::sstable::datablock::{DataBlock, DataBlockIterator};
 use crate::{DBKey, Entry, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fs::File;
 use std::io::{BufReader, Seek};
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 pub struct SSTableIterator<K, V> {
     pub(crate) reader: BufReader<File>,
     pub(crate) data_end_offset: u64,
-    pub(crate) current_block: Option<DataBlock<K, V>>,
-    pub(crate) current_idx: usize,
+    pub(crate) current_block: Option<Arc<DataBlock<K, V>>>,
+    pub(crate) current_iter: Option<DataBlockIterator<K, V>>,
     pub(crate) _phantom: PhantomData<(K, V)>,
 }
 
@@ -25,7 +26,7 @@ where
             reader,
             data_end_offset,
             current_block: None,
-            current_idx: 0,
+            current_iter: None,
             _phantom: PhantomData,
         }
     }
@@ -38,8 +39,9 @@ where
 
         match read_record(&mut self.reader)? {
             Some(block) => {
-                self.current_block = Some(block);
-                self.current_idx = 0;
+                let block_arc: Arc<DataBlock<K, V>> = Arc::new(block);
+                self.current_iter = Some(block_arc.iter());
+                self.current_block = Some(block_arc);
                 Ok(true)
             }
             None => Ok(false),
@@ -56,11 +58,8 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if let Some(block) = &self.current_block {
-                if let Some(entry) = block.iter().nth(self.current_idx) {
-                    self.current_idx += 1;
-                    return Some(Ok(entry));
-                }
+            if let Some(entry) = self.current_iter.as_mut().and_then(|iter| iter.next()) {
+                return Some(Ok(entry));
             }
 
             match self.load_next_block() {

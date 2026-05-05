@@ -31,12 +31,12 @@ where
         let mut log_entries = Vec::with_capacity(batch.entries.len());
         let mut total_batch_size = 0;
         for entry in batch.entries {
-            let key_size = std::mem::size_of_val(&*entry.key);
+            let key_size = calculate_size(&*entry.key);
             let val_size = entry
                 .value
                 .value
                 .as_ref()
-                .map_or(0, |v| std::mem::size_of_val(&**v));
+                .map_or(0, |v| calculate_size(&**v));
             total_batch_size += key_size + val_size;
             let log_entry = if entry.value.is_tombstone {
                 LogEntry::Delete(entry.key)
@@ -70,4 +70,15 @@ where
         }
         Ok(())
     }
+}
+
+fn calculate_size<T: 'static>(val: &T) -> usize {
+    let any_val = val as &dyn std::any::Any;
+    if let Some(s) = any_val.downcast_ref::<String>() {
+        return s.len() + std::mem::size_of::<String>();
+    }
+    if let Some(v) = any_val.downcast_ref::<Vec<u8>>() {
+        return v.len() + std::mem::size_of::<Vec<u8>>();
+    }
+    std::mem::size_of_val(val)
 }

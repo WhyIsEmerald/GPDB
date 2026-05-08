@@ -65,7 +65,10 @@ where
             use std::hash::Hasher;
             let mut s = DefaultHasher::new();
             entry.key.hash(&mut s);
-            key_hashes.push(s.finish());
+            let hash = s.finish();
+            if key_hashes.last() != Some(&hash) {
+                key_hashes.push(hash);
+            }
 
             if builder.is_empty() {
                 sparse_index.insert(Arc::clone(&entry.key), current_offset);

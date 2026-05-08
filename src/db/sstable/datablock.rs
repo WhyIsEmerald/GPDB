@@ -114,15 +114,23 @@ impl<K, V> DataBlock<K, V> {
         let mut iter = self.iter_borrowed();
         iter.seek_to_offset(self.restart_points[start_index] as usize);
 
+        let mut best_entry: Option<crate::ValueEntry<V>> = None;
         for entry in iter {
             match entry.key.as_ref().cmp(target) {
-                std::cmp::Ordering::Equal => return Some(entry.value),
-                std::cmp::Ordering::Greater => return None,
+                std::cmp::Ordering::Equal => {
+                    if let Some(ref best) = best_entry {
+                        if entry.value.sequence_number > best.sequence_number {
+                            best_entry = Some(entry.value);
+                        }
+                    } else {
+                        best_entry = Some(entry.value);
+                    }
+                }
+                std::cmp::Ordering::Greater => break,
                 std::cmp::Ordering::Less => continue,
             }
         }
-
-        None
+        best_entry
     }
 }
 

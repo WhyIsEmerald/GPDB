@@ -99,7 +99,7 @@ fn test_delta_encoding_correctness() {
 #[test]
 fn test_xor_filter_with_duplicate_keys() {
     let (tmp_dir, sstable_path) = setup();
-    
+
     // Create entries with duplicate keys but different sequence numbers
     let entries = vec![
         Ok(Entry {
@@ -129,8 +129,9 @@ fn test_xor_filter_with_duplicate_keys() {
     ];
 
     // This should not panic now that we filter duplicate hashes
-    let sst = SSTable::write_from_iter(&sstable_path, entries.into_iter(), SSTableId(1), 0, None).unwrap();
-    
+    let sst = SSTable::write_from_iter(&sstable_path, entries.into_iter(), SSTableId(1), 0, None)
+        .unwrap();
+
     // Verify the SSTable is still functional and returns the correct value
     assert_eq!(
         sst.get(&"key1".to_string())
@@ -142,4 +143,3 @@ fn test_xor_filter_with_duplicate_keys() {
         "v2"
     );
 }
-

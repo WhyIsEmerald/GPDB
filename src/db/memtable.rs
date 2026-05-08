@@ -33,18 +33,20 @@ where
         }
     }
 
-    pub fn put(&self, key: Arc<K>, value: Arc<V>) {
+    pub fn put(&self, key: Arc<K>, value: Arc<V>, sequence_number: u64) {
         let entry = ValueEntry {
             value: Some(value),
             is_tombstone: false,
+            sequence_number,
         };
         self.map.insert(key, entry);
     }
 
-    pub fn delete(&self, key: Arc<K>) {
+    pub fn delete(&self, key: Arc<K>, sequence_number: u64) {
         let entry = ValueEntry {
             value: None,
             is_tombstone: true,
+            sequence_number,
         };
         self.map.insert(key, entry);
     }

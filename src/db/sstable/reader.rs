@@ -54,6 +54,12 @@ where
         reader.read_exact(&mut buf_4)?;
         let version = u32::from_le_bytes(buf_4);
 
+        reader.read_exact(&mut buf_8)?;
+        let min_seq = u64::from_le_bytes(buf_8);
+
+        reader.read_exact(&mut buf_8)?;
+        let max_seq = u64::from_le_bytes(buf_8);
+
         if magic_number != MAGIC_NUMBER {
             return Err(Error::Corruption("Invalid magic number".to_string()));
         }
@@ -99,6 +105,8 @@ where
             filter,
             id,
             version,
+            min_seq,
+            max_seq,
             filter_offset,
             index_offset,
             file_size: file_len,

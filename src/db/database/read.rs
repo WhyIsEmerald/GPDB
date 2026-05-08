@@ -1,3 +1,4 @@
+use crate::types::records::ValueEntry;
 use crate::{DB, DBKey, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -45,26 +46,38 @@ where
             }
         }
 
+        let mut best_entry: Option<ValueEntry<V>> = None;
         let mut touched = 0;
         for level in &version.levels {
             for sstable in level.iter().rev() {
-                touched += 1;
-                if let Some(val_entry) = sstable.get(key)? {
-                    if val_entry.is_tombstone {
+                if let Some(ref best) = best_entry {
+                    if sstable.max_seq < best.sequence_number {
                         return Ok(ReadResult {
-                            value: None,
+                            value: if best.is_tombstone {
+                                None
+                            } else {
+                                best.value.clone()
+                            },
                             sstables_touched: touched,
                         });
                     }
-                    return Ok(ReadResult {
-                        value: val_entry.value,
-                        sstables_touched: touched,
-                    });
+                }
+
+                touched += 1;
+                if let Some(val_entry) = sstable.get(key)? {
+                    if let Some(ref best) = best_entry {
+                        if val_entry.sequence_number > best.sequence_number {
+                            best_entry = Some(val_entry);
+                        }
+                    } else {
+                        best_entry = Some(val_entry);
+                    }
                 }
             }
         }
+
         Ok(ReadResult {
-            value: None,
+            value: best_entry.and_then(|e| if e.is_tombstone { None } else { e.value }),
             sstables_touched: touched,
         })
     }

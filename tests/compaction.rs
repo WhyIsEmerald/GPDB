@@ -2,7 +2,7 @@ use gpdb::{Compactor, Entry, MemTable, MergeElement, MergeStream, SSTable, SSTab
 use std::sync::Arc;
 use tempfile::TempDir;
 
-fn make_el(key: &str, id: u64, iter_idx: usize) -> MergeElement<String, String> {
+fn make_el(key: &str, id: u64, iter_idx: usize, seq: u64) -> MergeElement<String, String> {
     MergeElement {
         sstable_id: SSTableId(id),
         entry: Entry {
@@ -10,6 +10,7 @@ fn make_el(key: &str, id: u64, iter_idx: usize) -> MergeElement<String, String> 
             value: ValueEntry {
                 value: Some(Arc::new("val".to_string())),
                 is_tombstone: false,
+                sequence_number: seq,
             },
         },
         iter_index: iter_idx,
@@ -21,9 +22,9 @@ fn key_priority() {
     use std::collections::BinaryHeap;
     let mut heap = BinaryHeap::new();
 
-    heap.push(make_el("C", 1, 0));
-    heap.push(make_el("A", 1, 0));
-    heap.push(make_el("B", 1, 0));
+    heap.push(make_el("C", 1, 0, 0));
+    heap.push(make_el("A", 1, 0, 0));
+    heap.push(make_el("B", 1, 0, 0));
 
     assert_eq!(heap.pop().unwrap().entry.key, Arc::new("A".to_string()));
     assert_eq!(heap.pop().unwrap().entry.key, Arc::new("B".to_string()));
@@ -35,9 +36,9 @@ fn id_priority_on_tie() {
     use std::collections::BinaryHeap;
     let mut heap = BinaryHeap::new();
 
-    heap.push(make_el("A", 10, 0));
-    heap.push(make_el("A", 2, 0));
-    heap.push(make_el("A", 5, 0));
+    heap.push(make_el("A", 10, 0, 0));
+    heap.push(make_el("A", 2, 0, 0));
+    heap.push(make_el("A", 5, 0, 0));
 
     let winner = heap.pop().unwrap();
     assert_eq!(winner.entry.key, Arc::new("A".to_string()));
@@ -52,10 +53,10 @@ fn complex_mix() {
     use std::collections::BinaryHeap;
     let mut heap = BinaryHeap::new();
 
-    heap.push(make_el("B", 100, 0));
-    heap.push(make_el("A", 1, 0));
-    heap.push(make_el("B", 50, 0));
-    heap.push(make_el("A", 50, 0));
+    heap.push(make_el("B", 100, 0, 0));
+    heap.push(make_el("A", 1, 0, 0));
+    heap.push(make_el("B", 50, 0, 0));
+    heap.push(make_el("A", 50, 0, 0));
 
     let first = heap.pop().unwrap();
     assert_eq!(first.entry.key, Arc::new("A".to_string()));
@@ -73,16 +74,16 @@ fn merge_stream_integration() {
 
     let sst1_path = tmp_dir.path().join("L0-1.sst");
     let mem1 = MemTable::new();
-    mem1.put(Arc::new("A".to_string()), Arc::new("v1-old".to_string()));
-    mem1.put(Arc::new("C".to_string()), Arc::new("v1".to_string()));
-    mem1.put(Arc::new("E".to_string()), Arc::new("v1".to_string()));
+    mem1.put(Arc::new("A".to_string()), Arc::new("v1-old".to_string()), 1);
+    mem1.put(Arc::new("C".to_string()), Arc::new("v1".to_string()), 1);
+    mem1.put(Arc::new("E".to_string()), Arc::new("v1".to_string()), 1);
     let sst1 = SSTable::write_from_memtable(&sst1_path, &mem1, SSTableId(1), None).unwrap();
 
     let sst2_path = tmp_dir.path().join("L0-2.sst");
     let mem2 = MemTable::new();
-    mem2.put(Arc::new("A".to_string()), Arc::new("v2-new".to_string()));
-    mem2.put(Arc::new("B".to_string()), Arc::new("v2".to_string()));
-    mem2.put(Arc::new("D".to_string()), Arc::new("v2".to_string()));
+    mem2.put(Arc::new("A".to_string()), Arc::new("v2-new".to_string()), 2);
+    mem2.put(Arc::new("B".to_string()), Arc::new("v2".to_string()), 2);
+    mem2.put(Arc::new("D".to_string()), Arc::new("v2".to_string()), 2);
     let sst2 = SSTable::write_from_memtable(&sst2_path, &mem2, SSTableId(2), None).unwrap();
 
     let sstables = vec![sst1, sst2];
@@ -106,14 +107,14 @@ fn compactor_l0_to_disk() {
 
     let path1 = tmp_dir.path().join("L0-1.sst");
     let mem1 = MemTable::new();
-    mem1.put(Arc::new("A".to_string()), Arc::new("old".to_string()));
-    mem1.put(Arc::new("C".to_string()), Arc::new("val".to_string()));
+    mem1.put(Arc::new("A".to_string()), Arc::new("old".to_string()), 1);
+    mem1.put(Arc::new("C".to_string()), Arc::new("val".to_string()), 1);
     let sst1 = SSTable::write_from_memtable(&path1, &mem1, SSTableId(1), None).unwrap();
 
     let path2 = tmp_dir.path().join("L0-2.sst");
     let mem2 = MemTable::new();
-    mem2.put(Arc::new("A".to_string()), Arc::new("new".to_string()));
-    mem2.put(Arc::new("B".to_string()), Arc::new("val".to_string()));
+    mem2.put(Arc::new("A".to_string()), Arc::new("new".to_string()), 2);
+    mem2.put(Arc::new("B".to_string()), Arc::new("val".to_string()), 2);
     let sst2 = SSTable::write_from_memtable(&path2, &mem2, SSTableId(2), None).unwrap();
 
     let l1_path = tmp_dir.path().join("L1-5.sst");

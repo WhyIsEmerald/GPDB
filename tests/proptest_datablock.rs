@@ -20,6 +20,7 @@ proptest! {
             let entry = ValueEntry {
                 value: Some(Arc::new(val)),
                 is_tombstone: false,
+                sequence_number: 0,
             };
             builder.add(key, &entry);
             entries.push(Entry {
@@ -54,6 +55,7 @@ proptest! {
             let entry = ValueEntry {
                 value: Some(Arc::new(val)),
                 is_tombstone: false,
+                sequence_number: 0,
             };
             builder.add(key, &entry);
             entries_written += 1;

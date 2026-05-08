@@ -27,7 +27,17 @@ impl<K: DBKey, V> Eq for MergeElement<K, V> {}
 impl<K: DBKey, V> Ord for MergeElement<K, V> {
     fn cmp(&self, other: &Self) -> Ordering {
         match other.entry.key.cmp(&self.entry.key) {
-            Ordering::Equal => self.sstable_id.cmp(&other.sstable_id),
+            Ordering::Equal => {
+                match self
+                    .entry
+                    .value
+                    .sequence_number
+                    .cmp(&other.entry.value.sequence_number)
+                {
+                    Ordering::Equal => self.sstable_id.cmp(&other.sstable_id),
+                    ord => ord,
+                }
+            }
             ord => ord,
         }
     }

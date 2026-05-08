@@ -38,6 +38,8 @@ where
 
         let mut min_key = None;
         let mut max_key = None;
+        let mut min_seq = None;
+        let mut max_seq = None;
         let mut num_entries = 0;
 
         let mut current_offset = 0;
@@ -50,6 +52,14 @@ where
             }
             max_key = Some(Arc::clone(&entry.key));
             num_entries += 1;
+
+            let seq = entry.value.sequence_number;
+            if min_seq.is_none() || seq < min_seq.unwrap() {
+                min_seq = Some(seq);
+            }
+            if max_seq.is_none() || seq > max_seq.unwrap() {
+                max_seq = Some(seq);
+            }
 
             use std::collections::hash_map::DefaultHasher;
             use std::hash::Hasher;
@@ -113,7 +123,9 @@ where
         writer.write_all(&id.0.to_le_bytes())?;
         writer.write_all(&MAGIC_NUMBER.to_le_bytes())?;
         writer.write_all(&FORMAT_VERSION.to_le_bytes())?;
-        writer.write_all(&[0u8; 20])?;
+        writer.write_all(&min_seq.unwrap_or(0).to_le_bytes())?;
+        writer.write_all(&max_seq.unwrap_or(0).to_le_bytes())?;
+        writer.write_all(&[0u8; 4])?;
 
         writer.flush()?;
 

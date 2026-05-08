@@ -31,6 +31,7 @@ where
             value: ValueEntry {
                 value: Some(Arc::new(value)),
                 is_tombstone: false,
+                sequence_number: 0,
             },
         });
     }
@@ -42,6 +43,7 @@ where
             value: ValueEntry {
                 value: None,
                 is_tombstone: true,
+                sequence_number: 0,
             },
         });
     }

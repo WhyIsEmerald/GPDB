@@ -5,7 +5,8 @@ pub mod write;
 use crate::db::compaction::{CompactionResult, CompactionTask, Compactor};
 use crate::db::wal::WalManager;
 use crate::{
-    BlockCache, DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId, Wal,
+    BlockCache, DBKey, LogOperation, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId,
+    Wal,
 };
 use arc_swap::ArcSwap;
 use parking_lot::Mutex;
@@ -14,7 +15,7 @@ use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::mpsc;
 
 pub(crate) const MANIFEST_FILE_NAME: &str = "MANIFEST";
@@ -79,6 +80,7 @@ where
     pub(crate) compaction_state: Arc<Mutex<CompactionState<K, V>>>,
     pub(crate) flush_mutex: Arc<Mutex<()>>,
     pub(crate) config: Arc<DBConfig<K, V>>,
+    pub(crate) sequence_number: Arc<AtomicU64>,
 }
 
 #[derive(Debug)]
@@ -174,14 +176,17 @@ where
 
         let memtable = Arc::new(MemTable::new());
         let mut last_wal_id = 0;
+        let mut max_seq = 0u64;
 
         for (id, wal_path) in &wal_files {
             last_wal_id = *id;
             let existing_wal = Wal::open(wal_path)?;
             for entry in existing_wal.iter()? {
-                match entry.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))? {
-                    LogEntry::Put(k, v) => memtable.put(k, v),
-                    LogEntry::Delete(k) => memtable.delete(k),
+                let entry = entry.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                max_seq = max_seq.max(entry.sequence_number);
+                match entry.operation {
+                    LogOperation::Put(k, v) => memtable.put(k, v, entry.sequence_number),
+                    LogOperation::Delete(k) => memtable.delete(k, entry.sequence_number),
                 }
             }
         }
@@ -210,6 +215,7 @@ where
                 memtable_size: AtomicUsize::new(0),
                 compaction_tx: task_tx,
             }),
+            sequence_number: Arc::new(AtomicU64::new(max_seq)),
         })
     }
 

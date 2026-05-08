@@ -13,7 +13,7 @@ fn put_get() {
 
     let key = "key".to_string();
     let arc_value = Arc::new("value".to_string());
-    memtable.put(Arc::new(key.clone()), arc_value.clone());
+    memtable.put(Arc::new(key.clone()), arc_value.clone(), 0);
     assert_eq!(memtable.len(), 1);
     assert_eq!(
         memtable.get(&Arc::new(key)),
@@ -28,14 +28,14 @@ fn put_overwrite() {
     let key = "key".to_string();
     let arc_value1 = Arc::new("value1".to_string());
     let arc_value2 = Arc::new("value2".to_string());
-    memtable.put(Arc::new(key.clone()), arc_value1.clone());
+    memtable.put(Arc::new(key.clone()), arc_value1.clone(), 0);
     assert_eq!(memtable.len(), 1);
     assert_eq!(
         memtable.get(&Arc::new(key.clone())),
         Some(Arc::new("value1".to_string()))
     );
 
-    memtable.put(Arc::new(key.clone()), arc_value2.clone());
+    memtable.put(Arc::new(key.clone()), arc_value2.clone(), 0);
     assert_eq!(memtable.len(), 1);
     assert_eq!(
         memtable.get(&Arc::new(key)),
@@ -49,14 +49,14 @@ fn delete_value() {
 
     let key = "key".to_string();
     let arc_value = Arc::new("value".to_string());
-    memtable.put(Arc::new(key.clone()), arc_value.clone());
+    memtable.put(Arc::new(key.clone()), arc_value.clone(), 0);
     assert_eq!(memtable.len(), 1);
     assert_eq!(
         memtable.get(&Arc::new(key.clone())),
         Some(Arc::new("value".to_string()))
     );
 
-    memtable.delete(Arc::new(key.clone()));
+    memtable.delete(Arc::new(key.clone()), 0);
     assert_eq!(memtable.len(), 0);
     assert!(memtable.get(&Arc::new(key)).is_none());
 }
@@ -67,11 +67,11 @@ fn clear_all() {
 
     let key1 = "key1".to_string();
     let arc_value1 = Arc::new("value1".to_string());
-    memtable.put(Arc::new(key1.clone()), arc_value1.clone());
+    memtable.put(Arc::new(key1.clone()), arc_value1.clone(), 0);
 
     let key2 = "key2".to_string();
     let arc_value2 = Arc::new("value2".to_string());
-    memtable.put(Arc::new(key2.clone()), arc_value2.clone());
+    memtable.put(Arc::new(key2.clone()), arc_value2.clone(), 0);
 
     memtable.clear();
     assert_eq!(memtable.len(), 0);
@@ -85,11 +85,11 @@ fn iter() {
 
     let key1 = "key1".to_string();
     let arc_value1 = Arc::new("value1".to_string());
-    memtable.put(Arc::new(key1.clone()), arc_value1.clone());
+    memtable.put(Arc::new(key1.clone()), arc_value1.clone(), 0);
 
     let key2 = "key2".to_string();
     let arc_value2 = Arc::new("value2".to_string());
-    memtable.put(Arc::new(key2.clone()), arc_value2.clone());
+    memtable.put(Arc::new(key2.clone()), arc_value2.clone(), 0);
 
     let mut iter = memtable.iter();
 
@@ -113,13 +113,13 @@ fn iter_tombstone() {
 
     let key1 = "key1".to_string();
     let arc_value1 = Arc::new("value1".to_string());
-    memtable.put(Arc::new(key1.clone()), arc_value1.clone());
+    memtable.put(Arc::new(key1.clone()), arc_value1.clone(), 0);
 
     let key2 = "key2".to_string();
     let arc_value2 = Arc::new("value2".to_string());
-    memtable.put(Arc::new(key2.clone()), arc_value2.clone());
+    memtable.put(Arc::new(key2.clone()), arc_value2.clone(), 0);
 
-    memtable.delete(Arc::new(key1.clone()));
+    memtable.delete(Arc::new(key1.clone()), 0);
 
     let mut iter = memtable.iter();
 

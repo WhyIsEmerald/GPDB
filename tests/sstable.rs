@@ -15,7 +15,7 @@ fn tiered_xor_filters() {
 
     let l0_path = tmp_dir.path().join("L0.sst");
     let memtable = MemTable::new();
-    memtable.put(Arc::new("k1".to_string()), Arc::new("v1".to_string()));
+    memtable.put(Arc::new("k1".to_string()), Arc::new("v1".to_string()), 0);
     let sst_l0 = SSTable::write_from_memtable(&l0_path, &memtable, SSTableId(1), None).unwrap();
     assert!(matches!(sst_l0.filter(), FilterVariant::Xor8(_)));
     assert!(sst_l0.get(&Arc::new("k1".to_string())).unwrap().is_some());
@@ -26,6 +26,7 @@ fn tiered_xor_filters() {
         value: ValueEntry {
             value: Some(Arc::new("v2".to_string())),
             is_tombstone: false,
+            sequence_number: 0,
         },
     })];
     let sst_l1 =
@@ -42,14 +43,17 @@ fn test_delta_encoding_correctness() {
     memtable.put(
         Arc::new("user_id_00001".to_string()),
         Arc::new("val1".to_string()),
+        0,
     );
     memtable.put(
         Arc::new("user_id_00002".to_string()),
         Arc::new("val2".to_string()),
+        0,
     );
     memtable.put(
         Arc::new("user_id_00003".to_string()),
         Arc::new("val3".to_string()),
+        0,
     );
 
     let sst = SSTable::write_from_memtable(&sstable_path, &memtable, SSTableId(1), None).unwrap();
@@ -89,5 +93,53 @@ fn test_delta_encoding_correctness() {
             Arc::new("user_id_00002".to_string()),
             Arc::new("user_id_00003".to_string()),
         ]
+    );
+}
+
+#[test]
+fn test_xor_filter_with_duplicate_keys() {
+    let (tmp_dir, sstable_path) = setup();
+
+    // Create entries with duplicate keys but different sequence numbers
+    let entries = vec![
+        Ok(Entry {
+            key: Arc::new("key1".to_string()),
+            value: ValueEntry {
+                value: Some(Arc::new("v1".to_string())),
+                is_tombstone: false,
+                sequence_number: 0,
+            },
+        }),
+        Ok(Entry {
+            key: Arc::new("key1".to_string()),
+            value: ValueEntry {
+                value: Some(Arc::new("v2".to_string())),
+                is_tombstone: false,
+                sequence_number: 1,
+            },
+        }),
+        Ok(Entry {
+            key: Arc::new("key2".to_string()),
+            value: ValueEntry {
+                value: Some(Arc::new("v3".to_string())),
+                is_tombstone: false,
+                sequence_number: 0,
+            },
+        }),
+    ];
+
+    // This should not panic now that we filter duplicate hashes
+    let sst = SSTable::write_from_iter(&sstable_path, entries.into_iter(), SSTableId(1), 0, None)
+        .unwrap();
+
+    // Verify the SSTable is still functional and returns the correct value
+    assert_eq!(
+        sst.get(&"key1".to_string())
+            .unwrap()
+            .unwrap()
+            .value
+            .unwrap()
+            .as_str(),
+        "v2"
     );
 }

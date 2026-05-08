@@ -15,6 +15,7 @@ pub fn sstable_bench(c: &mut Criterion) {
         mem.put(
             Arc::new(format!("key-{:05}", i)),
             Arc::new(format!("value-{}", i)),
+            0,
         );
     }
 

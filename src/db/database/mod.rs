@@ -5,16 +5,17 @@ pub mod write;
 use crate::db::compaction::{CompactionResult, CompactionTask, Compactor};
 use crate::db::wal::WalManager;
 use crate::{
-    BlockCache, DBKey, LogEntry, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId, Wal,
+    BlockCache, DBKey, LogOperation, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId,
+    Wal,
 };
 use arc_swap::ArcSwap;
 use parking_lot::Mutex;
 use serde::{Serialize, de::DeserializeOwned};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::mpsc;
 
 pub(crate) const MANIFEST_FILE_NAME: &str = "MANIFEST";
@@ -64,8 +65,29 @@ where
     }
 }
 
+/// A RAII handle that keeps a database snapshot active.
+#[derive(Debug)]
+pub struct Snapshot<K, V>
+where
+    K: DBKey + Send + Sync + 'static + std::fmt::Debug,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
+{
+    pub(crate) db: DB<K, V>,
+    pub(crate) seq: u64,
+}
+
+impl<K, V> Drop for Snapshot<K, V>
+where
+    K: DBKey + Send + Sync + 'static + std::fmt::Debug,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
+{
+    fn drop(&mut self) {
+        self.db.unregister_snapshot(self.seq);
+    }
+}
+
 /// The public handle to the database.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DB<K, V>
 where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
@@ -79,6 +101,31 @@ where
     pub(crate) compaction_state: Arc<Mutex<CompactionState<K, V>>>,
     pub(crate) flush_mutex: Arc<Mutex<()>>,
     pub(crate) config: Arc<DBConfig<K, V>>,
+    pub(crate) sequence_number: Arc<AtomicU64>,
+    pub(crate) active_snapshots: Arc<Mutex<BTreeMap<u64, ()>>>,
+    pub(crate) pending_deletions: Arc<Mutex<Vec<(PathBuf, u64)>>>,
+}
+
+impl<K, V> Clone for DB<K, V>
+where
+    K: DBKey + Send + Sync + 'static + std::fmt::Debug,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
+{
+    fn clone(&self) -> Self {
+        Self {
+            memtable: Arc::clone(&self.memtable),
+            wal: Arc::clone(&self.wal),
+            manifest: Arc::clone(&self.manifest),
+            version: Arc::clone(&self.version),
+            block_cache: Arc::clone(&self.block_cache),
+            compaction_state: Arc::clone(&self.compaction_state),
+            flush_mutex: Arc::clone(&self.flush_mutex),
+            config: Arc::clone(&self.config),
+            sequence_number: Arc::clone(&self.sequence_number),
+            active_snapshots: Arc::clone(&self.active_snapshots),
+            pending_deletions: Arc::clone(&self.pending_deletions),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -149,6 +196,13 @@ where
             l.sort_by_key(|sst| sst.id());
         }
 
+        let mut max_seq = 0u64;
+        for level in &levels {
+            for sst in level {
+                max_seq = max_seq.max(sst.max_seq);
+            }
+        }
+
         let version = Arc::new(ArcSwap::from(Arc::new(VersionState {
             levels,
             immutables: Vec::new(),
@@ -179,9 +233,11 @@ where
             last_wal_id = *id;
             let existing_wal = Wal::open(wal_path)?;
             for entry in existing_wal.iter()? {
-                match entry.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))? {
-                    LogEntry::Put(k, v) => memtable.put(k, v),
-                    LogEntry::Delete(k) => memtable.delete(k),
+                let entry = entry.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                max_seq = max_seq.max(entry.sequence_number);
+                match entry.operation {
+                    LogOperation::Put(k, v) => memtable.put(k, v, entry.sequence_number),
+                    LogOperation::Delete(k) => memtable.delete(k, entry.sequence_number),
                 }
             }
         }
@@ -210,6 +266,9 @@ where
                 memtable_size: AtomicUsize::new(0),
                 compaction_tx: task_tx,
             }),
+            sequence_number: Arc::new(AtomicU64::new(max_seq + 1)),
+            active_snapshots: Arc::new(Mutex::new(BTreeMap::new())),
+            pending_deletions: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -325,7 +384,9 @@ where
                         path: PathBuf::from(file_name),
                     })?;
                 }
-                let _ = std::fs::remove_file(sst.path());
+                self.pending_deletions
+                    .lock()
+                    .push((sst.path().to_path_buf(), sst.max_seq));
             }
 
             if let Some(new_file_name) = sstable.path().file_name() {
@@ -361,6 +422,40 @@ where
     pub fn total_sst_count(&self) -> usize {
         let version = self.version.load();
         version.levels.iter().map(|l| l.len()).sum()
+    }
+
+    pub fn snapshot(&self) -> Snapshot<K, V> {
+        let seq = self
+            .sequence_number
+            .load(std::sync::atomic::Ordering::SeqCst);
+        self.active_snapshots.lock().insert(seq, ());
+        Snapshot {
+            db: self.clone(),
+            seq,
+        }
+    }
+
+    pub fn min_active_seq(&self) -> u64 {
+        let snapshots = self.active_snapshots.lock();
+        snapshots.keys().next().copied().unwrap_or_else(|| {
+            self.sequence_number
+                .load(std::sync::atomic::Ordering::SeqCst)
+        })
+    }
+
+    pub(crate) fn unregister_snapshot(&self, seq: u64) {
+        self.active_snapshots.lock().remove(&seq);
+
+        let min_seq = self.min_active_seq();
+        let mut pending = self.pending_deletions.lock();
+        pending.retain(|(path, max_seq)| {
+            if *max_seq < min_seq {
+                let _ = std::fs::remove_file(path);
+                false
+            } else {
+                true
+            }
+        });
     }
 
     pub fn bloom_filter_avoided_io(&self) -> u64 {

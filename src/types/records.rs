@@ -26,16 +26,25 @@ impl<K: Clone, V> Clone for Entry<K, V> {
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub enum LogEntry<K, V> {
+pub enum LogOperation<K, V> {
     Put(Arc<K>, Arc<V>),
     Delete(Arc<K>),
 }
 
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct LogEntry<K, V> {
+    pub sequence_number: u64,
+    pub operation: LogOperation<K, V>,
+}
+
 impl<K: Clone, V> Clone for LogEntry<K, V> {
     fn clone(&self) -> Self {
-        match self {
-            Self::Put(k, v) => Self::Put(Arc::clone(k), Arc::clone(v)),
-            Self::Delete(k) => Self::Delete(Arc::clone(k)),
+        Self {
+            sequence_number: self.sequence_number,
+            operation: match &self.operation {
+                LogOperation::Put(k, v) => LogOperation::Put(Arc::clone(k), Arc::clone(v)),
+                LogOperation::Delete(k) => LogOperation::Delete(Arc::clone(k)),
+            },
         }
     }
 }
@@ -52,6 +61,7 @@ pub enum ManifestEntry {
 pub struct ValueEntry<V> {
     pub value: Option<Arc<V>>,
     pub is_tombstone: bool,
+    pub sequence_number: u64,
 }
 
 impl<V> Clone for ValueEntry<V> {
@@ -59,6 +69,7 @@ impl<V> Clone for ValueEntry<V> {
         Self {
             value: self.value.as_ref().map(Arc::clone),
             is_tombstone: self.is_tombstone,
+            sequence_number: self.sequence_number,
         }
     }
 }

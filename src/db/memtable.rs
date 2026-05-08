@@ -9,7 +9,7 @@ pub struct MemTable<K, V>
 where
     K: DBKey,
 {
-    map: SkipMap<Arc<K>, ValueEntry<V>>,
+    map: SkipMap<(Arc<K>, u64), ValueEntry<V>>,
 }
 
 impl<K, V> Default for MemTable<K, V>
@@ -33,31 +33,35 @@ where
         }
     }
 
-    pub fn put(&self, key: Arc<K>, value: Arc<V>) {
+    pub fn put(&self, key: Arc<K>, value: Arc<V>, sequence_number: u64) {
         let entry = ValueEntry {
             value: Some(value),
             is_tombstone: false,
+            sequence_number,
         };
-        self.map.insert(key, entry);
+        self.map.insert((key, sequence_number), entry);
     }
 
-    pub fn delete(&self, key: Arc<K>) {
+    pub fn delete(&self, key: Arc<K>, sequence_number: u64) {
         let entry = ValueEntry {
             value: None,
             is_tombstone: true,
+            sequence_number,
         };
-        self.map.insert(key, entry);
+        self.map.insert((key, sequence_number), entry);
     }
 
-    pub fn get(&self, key: &Arc<K>) -> Option<Arc<V>> {
+    pub fn get(&self, key: &Arc<K>, sequence_number: u64) -> Option<Arc<V>> {
+        self.get_entry(key, sequence_number)
+            .filter(|entry| !entry.is_tombstone)
+            .and_then(|entry| entry.value.clone())
+    }
+
+    pub fn get_entry(&self, key: &Arc<K>, sequence_number: u64) -> Option<ValueEntry<V>> {
         self.map
-            .get(key)
-            .filter(|entry| !entry.value().is_tombstone)
-            .and_then(|entry| entry.value().value.clone())
-    }
-
-    pub fn get_entry(&self, key: &Arc<K>) -> Option<ValueEntry<V>> {
-        self.map.get(key).map(|entry| entry.value().clone())
+            .range((key.clone(), 0)..(key.clone(), sequence_number))
+            .next_back()
+            .map(|entry| entry.value().clone())
     }
 
     pub fn len(&self) -> usize {
@@ -84,7 +88,7 @@ where
 }
 
 pub struct SkipMapIterator<'a, K, V> {
-    iter: crossbeam_skiplist::map::Iter<'a, Arc<K>, ValueEntry<V>>,
+    iter: crossbeam_skiplist::map::Iter<'a, (Arc<K>, u64), ValueEntry<V>>,
 }
 
 impl<'a, K, V> Iterator for SkipMapIterator<'a, K, V>
@@ -96,6 +100,6 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         self.iter
             .next()
-            .map(|entry| (Arc::clone(entry.key()), entry.value().clone()))
+            .map(|entry| (Arc::clone(&entry.key().0), entry.value().clone()))
     }
 }

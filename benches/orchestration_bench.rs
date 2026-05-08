@@ -20,7 +20,7 @@ pub fn orchestration_bench(c: &mut Criterion) {
     group.bench_function("get_memtable_hit", |b| {
         db.put("key-target".to_string(), "val".to_string()).unwrap();
         b.iter(|| {
-            db.get(black_box(&"key-target".to_string())).unwrap();
+            db.get(black_box(&"key-target".to_string()), None).unwrap();
         })
     });
 

@@ -14,15 +14,16 @@ pub fn memtable_bench(c: &mut Criterion) {
             mem.put(
                 black_box(Arc::new("key-0000000000".to_string())),
                 black_box(val.clone()),
+                0,
             );
         })
     });
 
     group.bench_function("get_hit", |b| {
         let mem = MemTable::new();
-        mem.put(Arc::new("key-target".to_string()), val.clone());
+        mem.put(Arc::new("key-target".to_string()), val.clone(), 0);
         b.iter(|| {
-            mem.get(black_box(&Arc::new("key-target".to_string())));
+            mem.get(black_box(&Arc::new("key-target".to_string())), 0);
         })
     });
 

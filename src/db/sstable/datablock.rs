@@ -9,6 +9,19 @@ pub const BLOCK_SIZE: usize = 4096;
 /// Number of entries between restart points
 pub const RESTART_INTERVAL: usize = 16;
 
+fn pack_footer(seq: u64, is_tombstone: bool) -> [u8; 8] {
+    let type_byte = if is_tombstone { 1u64 } else { 0u64 };
+    let packed = (seq << 8) | type_byte;
+    packed.to_le_bytes()
+}
+
+fn unpack_footer(footer: &[u8; 8]) -> (u64, bool) {
+    let packed = u64::from_le_bytes(*footer);
+    let seq = packed >> 8;
+    let is_tombstone = (packed & 0xff) != 0;
+    (seq, is_tombstone)
+}
+
 /// A DataBlock using Delta Encoding (Prefix Compression).
 /// The restart points allow binary search by jumping to full-key entries.
 #[derive(Debug, Serialize, Deserialize)]
@@ -101,15 +114,23 @@ impl<K, V> DataBlock<K, V> {
         let mut iter = self.iter_borrowed();
         iter.seek_to_offset(self.restart_points[start_index] as usize);
 
+        let mut best_entry: Option<crate::ValueEntry<V>> = None;
         for entry in iter {
             match entry.key.as_ref().cmp(target) {
-                std::cmp::Ordering::Equal => return Some(entry.value),
-                std::cmp::Ordering::Greater => return None,
+                std::cmp::Ordering::Equal => {
+                    if let Some(ref best) = best_entry {
+                        if entry.value.sequence_number > best.sequence_number {
+                            best_entry = Some(entry.value);
+                        }
+                    } else {
+                        best_entry = Some(entry.value);
+                    }
+                }
+                std::cmp::Ordering::Greater => break,
                 std::cmp::Ordering::Less => continue,
             }
         }
-
-        None
+        best_entry
     }
 }
 
@@ -140,7 +161,10 @@ where
     }
 
     pub fn add(&mut self, key: &K, value: &ValueEntry<V>) {
-        let key_bytes = bincode::serialize(key).unwrap_or_default();
+        let mut internal_key_bytes = bincode::serialize(key).unwrap_or_default();
+        internal_key_bytes
+            .extend_from_slice(&pack_footer(value.sequence_number, value.is_tombstone));
+
         let val_bytes = bincode::serialize(value).unwrap_or_default();
 
         let mut shared = 0;
@@ -148,23 +172,23 @@ where
         if self.count.is_multiple_of(RESTART_INTERVAL) {
             self.restart_points.push(self.data.len() as u32);
         } else {
-            let min_len = std::cmp::min(self.last_key_bytes.len(), key_bytes.len());
-            while shared < min_len && self.last_key_bytes[shared] == key_bytes[shared] {
+            let min_len = std::cmp::min(self.last_key_bytes.len(), internal_key_bytes.len());
+            while shared < min_len && self.last_key_bytes[shared] == internal_key_bytes[shared] {
                 shared += 1;
             }
         }
 
-        let unshared = key_bytes.len() - shared;
+        let unshared = internal_key_bytes.len() - shared;
 
         self.data.extend_from_slice(&(shared as u32).to_le_bytes());
         self.data
             .extend_from_slice(&(unshared as u32).to_le_bytes());
         self.data
             .extend_from_slice(&(val_bytes.len() as u32).to_le_bytes());
-        self.data.extend_from_slice(&key_bytes[shared..]);
+        self.data.extend_from_slice(&internal_key_bytes[shared..]);
         self.data.extend_from_slice(&val_bytes);
 
-        self.last_key_bytes = key_bytes;
+        self.last_key_bytes = internal_key_bytes;
         self.count += 1;
     }
 
@@ -233,8 +257,16 @@ where
 
         let val_bytes = read_bytes(val_len)?;
 
-        let key: K = bincode::deserialize(&key_bytes).ok()?;
-        let value: ValueEntry<V> = bincode::deserialize(val_bytes).ok()?;
+        if key_bytes.len() < 8 {
+            return None;
+        }
+        let (user_key_bytes, footer_bytes) = key_bytes.split_at(key_bytes.len() - 8);
+        let (seq, is_tombstone) = unpack_footer(footer_bytes.try_into().ok()?);
+
+        let key: K = bincode::deserialize(user_key_bytes).ok()?;
+        let mut value: ValueEntry<V> = bincode::deserialize(val_bytes).ok()?;
+        value.sequence_number = seq;
+        value.is_tombstone = is_tombstone;
 
         self.last_key_bytes = key_bytes;
         Some(crate::Entry {
@@ -292,8 +324,16 @@ where
 
         let val_bytes = read_bytes(val_len)?;
 
-        let key: K = bincode::deserialize(&key_bytes).ok()?;
-        let value: ValueEntry<V> = bincode::deserialize(val_bytes).ok()?;
+        if key_bytes.len() < 8 {
+            return None;
+        }
+        let (user_key_bytes, footer_bytes) = key_bytes.split_at(key_bytes.len() - 8);
+        let (seq, is_tombstone) = unpack_footer(footer_bytes.try_into().ok()?);
+
+        let key: K = bincode::deserialize(user_key_bytes).ok()?;
+        let mut value: ValueEntry<V> = bincode::deserialize(val_bytes).ok()?;
+        value.sequence_number = seq;
+        value.is_tombstone = is_tombstone;
 
         self.last_key_bytes = key_bytes;
         Some(crate::Entry {

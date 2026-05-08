@@ -1,5 +1,5 @@
 use crate::db::database::DB;
-use crate::{DBKey, LogEntry, Result, WriteBatch};
+use crate::{DBKey, LogEntry, LogOperation, Result, WriteBatch};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::sync::Arc;
@@ -38,10 +38,20 @@ where
                 .as_ref()
                 .map_or(0, |v| calculate_size(&**v));
             total_batch_size += key_size + val_size;
+            let seq = self.sequence_number.fetch_add(1, Ordering::SeqCst);
             let log_entry = if entry.value.is_tombstone {
-                LogEntry::Delete(entry.key)
+                LogEntry {
+                    sequence_number: seq,
+                    operation: LogOperation::Delete(entry.key),
+                }
             } else {
-                LogEntry::Put(entry.key, entry.value.value.expect("Value missing"))
+                LogEntry {
+                    sequence_number: seq,
+                    operation: LogOperation::Put(
+                        entry.key,
+                        entry.value.value.expect("Value missing"),
+                    ),
+                }
             };
             log_entries.push(log_entry);
         }
@@ -53,9 +63,11 @@ where
 
         let memtable = self.memtable.load();
         for entry in entries_arc.iter() {
-            match entry {
-                LogEntry::Put(k, v) => memtable.put(Arc::clone(k), Arc::clone(v)),
-                LogEntry::Delete(k) => memtable.delete(Arc::clone(k)),
+            match &entry.operation {
+                LogOperation::Put(k, v) => {
+                    memtable.put(Arc::clone(k), Arc::clone(v), entry.sequence_number)
+                }
+                LogOperation::Delete(k) => memtable.delete(Arc::clone(k), entry.sequence_number),
             }
         }
 

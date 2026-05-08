@@ -8,20 +8,28 @@ fn db_basic_ops() {
 
     db.put("k1".to_string(), "v1".to_string()).unwrap();
     assert_eq!(
-        db.get(&"k1".to_string()).unwrap().value.unwrap().as_str(),
+        db.get(&"k1".to_string(), None)
+            .unwrap()
+            .value
+            .unwrap()
+            .as_str(),
         "v1"
     );
 
     db.put("k1".to_string(), "v2".to_string()).unwrap();
     assert_eq!(
-        db.get(&"k1".to_string()).unwrap().value.unwrap().as_str(),
+        db.get(&"k1".to_string(), None)
+            .unwrap()
+            .value
+            .unwrap()
+            .as_str(),
         "v2"
     );
 
     db.delete("k1".to_string()).unwrap();
-    assert!(db.get(&"k1".to_string()).unwrap().value.is_none());
+    assert!(db.get(&"k1".to_string(), None).unwrap().value.is_none());
 
-    assert!(db.get(&"k2".to_string()).unwrap().value.is_none());
+    assert!(db.get(&"k2".to_string(), None).unwrap().value.is_none());
 }
 
 #[test]
@@ -39,7 +47,7 @@ fn db_persistence_and_recovery() {
     let db_recovered: DB<String, String> = DB::open(path, 1024).unwrap();
     assert_eq!(
         db_recovered
-            .get(&"k1".to_string())
+            .get(&"k1".to_string(), None)
             .unwrap()
             .value
             .unwrap()
@@ -48,14 +56,20 @@ fn db_persistence_and_recovery() {
     );
     assert_eq!(
         db_recovered
-            .get(&"k2".to_string())
+            .get(&"k2".to_string(), None)
             .unwrap()
             .value
             .unwrap()
             .as_str(),
         "v2"
     );
-    assert!(db_recovered.get(&"k3".to_string()).unwrap().value.is_none());
+    assert!(
+        db_recovered
+            .get(&"k3".to_string(), None)
+            .unwrap()
+            .value
+            .is_none()
+    );
 }
 
 #[test]
@@ -67,7 +81,7 @@ fn db_flush_and_read() {
         .unwrap();
 
     assert_eq!(
-        db.get(&"very-long-key".to_string())
+        db.get(&"very-long-key".to_string(), None)
             .unwrap()
             .value
             .unwrap()
@@ -96,7 +110,7 @@ fn db_compaction_integration() {
 
     for i in 0..5 {
         assert_eq!(
-            db.get(&format!("key-{}", i))
+            db.get(&format!("key-{}", i), None)
                 .unwrap()
                 .value
                 .unwrap()
@@ -104,14 +118,14 @@ fn db_compaction_integration() {
             "new-val"
         );
     }
-    assert!(db.get(&"key-7".to_string()).unwrap().value.is_none());
+    assert!(db.get(&"key-7".to_string(), None).unwrap().value.is_none());
 
     drop(db);
     let db_reopened: DB<String, String> = DB::open(path, 50).unwrap();
 
     assert_eq!(
         db_reopened
-            .get(&"key-0".to_string())
+            .get(&"key-0".to_string(), None)
             .unwrap()
             .value
             .unwrap()
@@ -120,7 +134,7 @@ fn db_compaction_integration() {
     );
     assert!(
         db_reopened
-            .get(&"key-7".to_string())
+            .get(&"key-7".to_string(), None)
             .unwrap()
             .value
             .is_none()
@@ -144,7 +158,7 @@ fn db_manifest_complex_reconciliation() {
     let db_reopened: DB<String, String> = DB::open(path, 1024).unwrap();
     assert_eq!(
         db_reopened
-            .get(&"a".to_string())
+            .get(&"a".to_string(), None)
             .unwrap()
             .value
             .unwrap()
@@ -153,7 +167,7 @@ fn db_manifest_complex_reconciliation() {
     );
     assert_eq!(
         db_reopened
-            .get(&"e".to_string())
+            .get(&"e".to_string(), None)
             .unwrap()
             .value
             .unwrap()
@@ -173,6 +187,6 @@ fn db_level_n_compaction() {
         db.put(format!("key-{}", i), "val".to_string()).unwrap();
     }
 
-    let val = db.get(&"key-0".to_string()).unwrap().value.unwrap();
+    let val = db.get(&"key-0".to_string(), None).unwrap().value.unwrap();
     assert_eq!(val.as_str(), "val");
 }

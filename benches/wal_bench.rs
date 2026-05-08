@@ -1,5 +1,5 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use gpdb::{LogEntry, Wal};
+use gpdb::{LogEntry, LogOperation, Wal};
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -13,7 +13,10 @@ pub fn wal_bench(c: &mut Criterion) {
 
     for size in [100, 1024, 10240].iter() {
         let val = "a".repeat(*size);
-        let entry = LogEntry::Put(Arc::new("key".to_string()), Arc::new(val));
+        let entry = LogEntry {
+            sequence_number: 0,
+            operation: LogOperation::Put(Arc::new("key".to_string()), Arc::new(val)),
+        };
 
         let mut count = 0;
         group.bench_with_input(BenchmarkId::new("append_no_flush", size), size, |b, _| {

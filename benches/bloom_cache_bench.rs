@@ -10,7 +10,11 @@ fn main() -> gpdb::Result<()> {
     let memtable = gpdb::MemTable::new();
     let num_keys = 10_000;
     for i in 0..num_keys {
-                memtable.put(Arc::new(format!("key-{}", i)), Arc::new("val".to_string()), 0);
+        memtable.put(
+            Arc::new(format!("key-{}", i)),
+            Arc::new("val".to_string()),
+            0,
+        );
     }
 
     let sst_path = path.join("fpr_test.sst");

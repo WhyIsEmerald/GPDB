@@ -11,19 +11,19 @@ pub fn memtable_bench(c: &mut Criterion) {
     group.bench_function("put_30b", |b| {
         let mem = MemTable::new();
         b.iter(|| {
-               mem.put(
-                   black_box(Arc::new("key-0000000000".to_string())),
-                   black_box(val.clone()),
-                   0,
-               );
+            mem.put(
+                black_box(Arc::new("key-0000000000".to_string())),
+                black_box(val.clone()),
+                0,
+            );
         })
     });
 
     group.bench_function("get_hit", |b| {
         let mem = MemTable::new();
-         mem.put(Arc::new("key-target".to_string()), val.clone(), 0);
+        mem.put(Arc::new("key-target".to_string()), val.clone(), 0);
         b.iter(|| {
-             mem.get(black_box(&Arc::new("key-target".to_string())), 0);
+            mem.get(black_box(&Arc::new("key-target".to_string())), 0);
         })
     });
 

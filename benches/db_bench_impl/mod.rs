@@ -54,7 +54,7 @@ fn run_read_phase(
         let key = pattern.generate(target, key_pad);
 
         let t0 = Instant::now();
-                    let read_res = db.get(&key, None)?;
+        let read_res = db.get(&key, None)?;
         let val = read_res.value;
         let touched = read_res.sstables_touched;
         let dt = t0.elapsed();

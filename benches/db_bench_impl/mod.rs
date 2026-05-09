@@ -43,41 +43,72 @@ fn run_read_phase(
     deleted_range: Option<usize>,
     pattern: KeyPattern,
     key_pad: usize,
+    threads: usize,
 ) -> gpdb::Result<Metrics> {
-    let mut correct = 0usize;
-    let mut samples: Vec<u128> = Vec::with_capacity(num_reads);
-    let mut touched_samples: Vec<u128> = Vec::with_capacity(num_reads);
+    let db_arc = Arc::new(db.clone());
+    let reads_per_thread = num_reads / threads;
     let start = Instant::now();
+    let mut handles = Vec::with_capacity(threads);
 
-    for i in 0..num_reads {
-        let target = utils::lcg(i).wrapping_mul(1103515245).wrapping_add(12345) % range;
-        let key = pattern.generate(target, key_pad);
+    for t in 0..threads {
+        let dbc = db_arc.clone();
+        let pattern = pattern;
+        let range = range;
+        let deleted_range = deleted_range;
+        let key_pad = key_pad;
+        handles.push(thread::spawn(move || {
+            let mut local_samples = Vec::with_capacity(reads_per_thread);
+            let mut local_touched = Vec::with_capacity(reads_per_thread);
+            let mut local_correct = 0usize;
 
-        let t0 = Instant::now();
-        let read_res = db.get(&key, None)?;
-        let val = read_res.value;
-        let touched = read_res.sstables_touched;
-        let dt = t0.elapsed();
-        samples.push(dt.as_micros());
-        touched_samples.push(touched as u128);
+            for i in 0..reads_per_thread {
+                let global_idx = t * reads_per_thread + i;
+                let target = utils::lcg(global_idx)
+                    .wrapping_mul(1103515245)
+                    .wrapping_add(12345)
+                    % range;
+                let key = pattern.generate(target, key_pad);
 
-        match deleted_range {
-            Some(dr) if target < dr => {
-                if val.is_none() {
-                    correct += 1;
+                let t0 = Instant::now();
+                let read_res = dbc.get(&key, None).unwrap();
+                let val = read_res.value;
+                let touched = read_res.sstables_touched;
+                let dt = t0.elapsed();
+
+                local_samples.push(dt.as_micros());
+                local_touched.push(touched as u128);
+
+                match deleted_range {
+                    Some(dr) if target < dr => {
+                        if val.is_none() {
+                            local_correct += 1;
+                        }
+                    }
+                    _ => {
+                        if val.is_some() {
+                            local_correct += 1;
+                        }
+                    }
                 }
             }
-            _ => {
-                if val.is_some() {
-                    correct += 1;
-                }
-            }
-        }
+            (local_samples, local_touched, local_correct)
+        }));
+    }
+
+    let mut all_samples = Vec::with_capacity(num_reads);
+    let mut all_touched = Vec::with_capacity(num_reads);
+    let mut total_correct = 0usize;
+
+    for h in handles {
+        let (s, t, c) = h.join().expect("read thread panic");
+        all_samples.extend(s);
+        all_touched.extend(t);
+        total_correct += c;
     }
 
     let duration = start.elapsed();
     let accuracy = if num_reads > 0 {
-        (correct as f64 / num_reads as f64) * 100.0
+        (total_correct as f64 / num_reads as f64) * 100.0
     } else {
         0.0
     };
@@ -90,14 +121,14 @@ fn run_read_phase(
         0.0
     };
 
-    let touch_stats = if !touched_samples.is_empty() {
-        let sum: u128 = touched_samples.iter().sum();
+    let touch_stats = if !all_touched.is_empty() {
+        let sum: u128 = all_touched.iter().sum();
         Some(self::metrics::TouchStats {
-            mean: sum as f64 / touched_samples.len() as f64,
-            p50: self::metrics::percentile(touched_samples.clone(), 50.0),
-            p90: self::metrics::percentile(touched_samples.clone(), 90.0),
-            p95: self::metrics::percentile(touched_samples.clone(), 95.0),
-            p99: self::metrics::percentile(touched_samples.clone(), 99.0),
+            mean: sum as f64 / all_touched.len() as f64,
+            p50: self::metrics::percentile(all_touched.clone(), 50.0),
+            p90: self::metrics::percentile(all_touched.clone(), 90.0),
+            p95: self::metrics::percentile(all_touched.clone(), 95.0),
+            p99: self::metrics::percentile(all_touched.clone(), 99.0),
         })
     } else {
         None
@@ -110,7 +141,7 @@ fn run_read_phase(
         sst_count: db.total_sst_count(),
         accuracy,
         filter_avoided_io: avoided_io,
-        lat: calculate_lat_stats(samples),
+        lat: calculate_lat_stats(all_samples),
         touch: touch_stats,
         cache_hit_rate,
     })
@@ -175,25 +206,48 @@ fn run_full_benchmark(cfg: &BenchConfig) -> gpdb::Result<()> {
     })?;
 
     if cfg.num_overwrites > 0 {
-        let mut samples = Vec::with_capacity(cfg.num_overwrites);
+        let db_arc = Arc::new(db.clone());
+        let threads = cfg.threads;
+        let writes_per_thread = cfg.num_overwrites / threads;
         let start = Instant::now();
-        for i in 0..cfg.num_overwrites {
-            let target =
-                utils::lcg(i).wrapping_mul(1664525).wrapping_add(1013904223) % cfg.num_writes;
-            let key = cfg.pattern.generate(target, cfg.key_size);
-            let val = format!("upd{:0width$}", target, width = cfg.val_size);
-            let t0 = Instant::now();
-            db.put(key, val)?;
-            samples.push(t0.elapsed().as_micros());
+
+        let mut handles = Vec::with_capacity(threads);
+        for t in 0..threads {
+            let dbc = db_arc.clone();
+            let pattern = cfg.pattern;
+            let val_size = cfg.val_size;
+            let key_pad = cfg.key_size;
+            handles.push(thread::spawn(move || {
+                let mut thread_samples = Vec::with_capacity(writes_per_thread);
+                for i in 0..writes_per_thread {
+                    let global_idx = t * writes_per_thread + i;
+                    let target = utils::lcg(global_idx)
+                        .wrapping_mul(1664525)
+                        .wrapping_add(1013904223)
+                        % 1_000_000;
+                    let key = pattern.generate(target, key_pad);
+                    let val = format!("upd{:0width$}", target, width = val_size);
+                    let t0 = Instant::now();
+                    dbc.put(key, val).unwrap();
+                    thread_samples.push(t0.elapsed().as_micros());
+                }
+                thread_samples
+            }));
         }
+
+        let mut all_samples = Vec::with_capacity(cfg.num_overwrites);
+        for h in handles {
+            all_samples.extend(h.join().expect("overwrite thread panic"));
+        }
+
         reporter.record(Metrics {
             name: "Random Overwrites".into(),
-            total_ops: cfg.num_overwrites,
+            total_ops: threads * writes_per_thread,
             duration: start.elapsed(),
             sst_count: db.total_sst_count(),
             accuracy: 100.0,
             filter_avoided_io: 0,
-            lat: calculate_lat_stats(samples),
+            lat: calculate_lat_stats(all_samples),
             touch: None,
             cache_hit_rate: 0.0,
         })?;
@@ -208,6 +262,7 @@ fn run_full_benchmark(cfg: &BenchConfig) -> gpdb::Result<()> {
             None,
             cfg.pattern,
             cfg.key_size,
+            cfg.threads,
         )?;
         reporter.record(m)?;
     }
@@ -257,22 +312,42 @@ fn run_full_benchmark(cfg: &BenchConfig) -> gpdb::Result<()> {
     }
 
     if cfg.num_deletes > 0 {
-        let mut samples = Vec::with_capacity(cfg.num_deletes);
+        let db_arc = Arc::new(db.clone());
+        let threads = cfg.threads;
+        let deletes_per_thread = cfg.num_deletes / threads;
         let start = Instant::now();
-        for i in 0..cfg.num_deletes {
-            let key = cfg.pattern.generate(i, cfg.key_size);
-            let t0 = Instant::now();
-            db.delete(key)?;
-            samples.push(t0.elapsed().as_micros());
+
+        let mut handles = Vec::with_capacity(threads);
+        for t in 0..threads {
+            let dbc = db_arc.clone();
+            let pattern = cfg.pattern;
+            let key_pad = cfg.key_size;
+            handles.push(thread::spawn(move || {
+                let mut thread_samples = Vec::with_capacity(deletes_per_thread);
+                for i in 0..deletes_per_thread {
+                    let global_idx = t * deletes_per_thread + i;
+                    let key = pattern.generate(global_idx, key_pad);
+                    let t0 = Instant::now();
+                    dbc.delete(key).unwrap();
+                    thread_samples.push(t0.elapsed().as_micros());
+                }
+                thread_samples
+            }));
         }
+
+        let mut all_samples = Vec::with_capacity(cfg.num_deletes);
+        for h in handles {
+            all_samples.extend(h.join().expect("delete thread panic"));
+        }
+
         reporter.record(Metrics {
             name: "Random Deletions".into(),
-            total_ops: cfg.num_deletes,
+            total_ops: threads * deletes_per_thread,
             duration: start.elapsed(),
             sst_count: db.total_sst_count(),
             accuracy: 100.0,
             filter_avoided_io: 0,
-            lat: calculate_lat_stats(samples),
+            lat: calculate_lat_stats(all_samples),
             touch: None,
             cache_hit_rate: 0.0,
         })?;
@@ -310,6 +385,7 @@ fn run_full_benchmark(cfg: &BenchConfig) -> gpdb::Result<()> {
             Some(cfg.num_deletes),
             cfg.pattern,
             cfg.key_size,
+            cfg.threads,
         )?;
         reporter.record(m)?;
     }

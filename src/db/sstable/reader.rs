@@ -168,9 +168,8 @@ where
     }
 
     pub(crate) fn hash_key(&self, key: &K) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
         use std::hash::Hasher;
-        let mut s = DefaultHasher::new();
+        let mut s = twox_hash::XxHash64::with_seed(0);
         key.hash(&mut s);
         s.finish()
     }

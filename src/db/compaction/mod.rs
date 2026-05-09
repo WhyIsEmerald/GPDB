@@ -35,7 +35,10 @@ where
         level: usize,
         original_sstables: Vec<SSTable<K, V>>,
     },
-    Failure(String),
+    Failure {
+        error: String,
+        original_sstables: Vec<SSTable<K, V>>,
+    },
 }
 
 pub struct Compactor;
@@ -116,7 +119,12 @@ impl Compactor {
                                 .ok();
                         }
                         Err(e) => {
-                            sender.send(CompactionResult::Failure(e.to_string())).ok();
+                            sender
+                                .send(CompactionResult::Failure {
+                                    error: e.to_string(),
+                                    original_sstables: sstables,
+                                })
+                                .ok();
                         }
                     }
                 }

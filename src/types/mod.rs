@@ -1,6 +1,9 @@
 pub mod records;
 pub use records::*;
 
+pub mod sizable;
+pub use sizable::*;
+
 pub mod result;
 pub use result::*;
 

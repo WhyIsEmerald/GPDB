@@ -1,5 +1,5 @@
 use crate::types::records::ValueEntry;
-use crate::{DB, DBKey, Result};
+use crate::{DB, DBKey, Result, types::sizable::Sizable};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ pub struct ReadResult<V> {
 impl<K, V> DB<K, V>
 where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
-    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
     pub fn get(
         &self,

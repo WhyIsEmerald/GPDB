@@ -1,13 +1,19 @@
 use crate::SSTableId;
+use crate::types::sizable::Sizable;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::cmp::Ord;
 use std::hash::Hash;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub trait DBKey: Eq + Hash + Ord + Clone + Serialize + DeserializeOwned + std::fmt::Debug {}
-impl<T> DBKey for T where T: Eq + Hash + Ord + Clone + Serialize + DeserializeOwned + std::fmt::Debug
-{}
+pub trait DBKey:
+    Eq + Hash + Ord + Clone + Serialize + DeserializeOwned + std::fmt::Debug + Sizable
+{
+}
+impl<T> DBKey for T where
+    T: Eq + Hash + Ord + Clone + Serialize + DeserializeOwned + std::fmt::Debug + Sizable
+{
+}
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 /// A full key-value pair as stored in an SSTable data block or returned by iterators.
@@ -54,6 +60,7 @@ pub enum ManifestEntry {
     AddSSTable { level: usize, path: PathBuf },
     RemoveSSTable { level: usize, path: PathBuf },
     NextID(SSTableId),
+    FlushWal { wal_id: u64 },
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]

@@ -1,5 +1,5 @@
 use crate::db::database::DB;
-use crate::{DBKey, LogEntry, LogOperation, Result, WriteBatch};
+use crate::{DBKey, LogEntry, LogOperation, Result, WriteBatch, types::sizable::Sizable};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 impl<K, V> DB<K, V>
 where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
-    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
     pub fn put(&self, key: K, value: V) -> Result<()> {
         let mut batch = WriteBatch::new();
@@ -84,13 +84,6 @@ where
     }
 }
 
-fn calculate_size<T: 'static>(val: &T) -> usize {
-    let any_val = val as &dyn std::any::Any;
-    if let Some(s) = any_val.downcast_ref::<String>() {
-        return s.len() + std::mem::size_of::<String>();
-    }
-    if let Some(v) = any_val.downcast_ref::<Vec<u8>>() {
-        return v.len() + std::mem::size_of::<Vec<u8>>();
-    }
-    std::mem::size_of_val(val)
+fn calculate_size<T: Sizable>(val: &T) -> usize {
+    val.size()
 }

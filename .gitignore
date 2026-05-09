@@ -1,3 +1,2 @@
 /target
-.graphifyignore
-graphify-out
+bench_data

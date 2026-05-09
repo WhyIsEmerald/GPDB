@@ -4,6 +4,40 @@ use std::io::{Seek, SeekFrom, Write};
 use tempfile::TempDir;
 
 #[test]
+fn recovery_prevents_redundant_wal_replay() {
+    let tmp_dir = TempDir::new().unwrap();
+    let path = tmp_dir.path();
+
+    {
+        let db: DB<String, String> = DB::open(path, 100).unwrap();
+        db.put("k1".to_string(), "v1".to_string()).unwrap();
+        db.put("k2".to_string(), "v2".to_string()).unwrap();
+
+        while db.total_sst_count() == 0 {
+            db.put("k_flush".to_string(), "v_flush".to_string())
+                .unwrap();
+        }
+
+        db.put("k3".to_string(), "v3".to_string()).unwrap();
+    }
+
+    let db: DB<String, String> = DB::open(path, 1024 * 1024).unwrap();
+
+    assert_eq!(
+        &*db.get(&"k1".to_string(), None).unwrap().value.unwrap(),
+        "v1"
+    );
+    assert_eq!(
+        &*db.get(&"k2".to_string(), None).unwrap().value.unwrap(),
+        "v2"
+    );
+    assert_eq!(
+        &*db.get(&"k3".to_string(), None).unwrap().value.unwrap(),
+        "v3"
+    );
+}
+
+#[test]
 fn recovery_from_corrupted_wal() {
     let tmp_dir = TempDir::new().unwrap();
     let path = tmp_dir.path();

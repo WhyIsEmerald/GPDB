@@ -1,7 +1,7 @@
 use crate::db::database::DB;
 use crate::db::database::VersionState;
 use crate::types::records::DBKey;
-use crate::{ManifestEntry, MemTable, Result, SSTable, SSTableId};
+use crate::{ManifestEntry, MemTable, Result, SSTable, SSTableId, types::sizable::Sizable};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::path::PathBuf;
@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 impl<K, V> DB<K, V>
 where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
-    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
     pub(crate) fn switch_memtable(&self) -> Result<()> {
         let _lock = self.flush_mutex.lock();
@@ -78,6 +78,9 @@ where
                 manifest.append(&ManifestEntry::AddSSTable {
                     level: 0,
                     path: PathBuf::from(&filename),
+                })?;
+                manifest.append(&ManifestEntry::FlushWal {
+                    wal_id: imm_entry.wal_id,
                 })?;
                 manifest.append(&ManifestEntry::NextID(state.next_id))?;
                 manifest.flush()?;

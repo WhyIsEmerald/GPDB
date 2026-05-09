@@ -6,7 +6,7 @@ use crate::db::compaction::{CompactionResult, CompactionTask, Compactor};
 use crate::db::wal::WalManager;
 use crate::{
     BlockCache, DBKey, LogOperation, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId,
-    Wal,
+    Wal, types::sizable::Sizable,
 };
 use arc_swap::ArcSwap;
 use parking_lot::Mutex;
@@ -26,7 +26,7 @@ pub(crate) const MAX_LEVEL: usize = 7;
 pub struct VersionState<K, V>
 where
     K: DBKey + Send + Sync + 'static,
-    V: Serialize + DeserializeOwned + Send + Sync + 'static,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static + Sizable,
 {
     pub levels: Vec<Vec<SSTable<K, V>>>,
     pub immutables: Vec<ImmutableMemTable<K, V>>,
@@ -36,7 +36,7 @@ where
 pub struct ImmutableMemTable<K, V>
 where
     K: DBKey + Send + Sync + 'static,
-    V: Serialize + DeserializeOwned + Send + Sync + 'static,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static + Sizable,
 {
     pub memtable: Arc<MemTable<K, V>>,
     pub wal_id: u64,
@@ -45,7 +45,7 @@ where
 impl<K, V> Clone for ImmutableMemTable<K, V>
 where
     K: DBKey + Send + Sync + 'static,
-    V: Serialize + DeserializeOwned + Send + Sync + 'static,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static + Sizable,
 {
     fn clone(&self) -> Self {
         Self {
@@ -58,7 +58,7 @@ where
 impl<K, V> VersionState<K, V>
 where
     K: DBKey + Send + Sync + 'static,
-    V: Serialize + DeserializeOwned + Send + Sync + 'static,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static + Sizable,
 {
     pub fn new(levels: Vec<Vec<SSTable<K, V>>>, immutables: Vec<ImmutableMemTable<K, V>>) -> Self {
         Self { levels, immutables }
@@ -70,7 +70,7 @@ where
 pub struct Snapshot<K, V>
 where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
-    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
     pub(crate) db: DB<K, V>,
     pub(crate) seq: u64,
@@ -79,7 +79,7 @@ where
 impl<K, V> Drop for Snapshot<K, V>
 where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
-    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
     fn drop(&mut self) {
         self.db.unregister_snapshot(self.seq);
@@ -91,7 +91,7 @@ where
 pub struct DB<K, V>
 where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
-    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
     pub(crate) memtable: Arc<ArcSwap<MemTable<K, V>>>,
     pub(crate) wal: Arc<WalManager<K, V>>,
@@ -109,7 +109,7 @@ where
 impl<K, V> Clone for DB<K, V>
 where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
-    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
     fn clone(&self) -> Self {
         Self {
@@ -132,7 +132,7 @@ where
 pub(crate) struct DBConfig<K, V>
 where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
-    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
     pub(crate) path: PathBuf,
     pub(crate) max_memtable_size: usize,
@@ -144,7 +144,7 @@ where
 pub(crate) struct CompactionState<K, V>
 where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
-    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
     pub(crate) next_id: SSTableId,
     pub(crate) compacting_ids: HashSet<SSTableId>,
@@ -154,7 +154,7 @@ where
 impl<K, V> DB<K, V>
 where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
-    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
+    V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
     pub fn open(path: &Path, max_memtable_size: usize) -> Result<Self> {
         std::fs::create_dir_all(path)?;
@@ -170,6 +170,7 @@ where
         let mut levels: Vec<Vec<SSTable<K, V>>> = vec![Vec::new()];
         let mut next_id = SSTableId(0);
         let mut active_sstables: HashSet<(usize, PathBuf)> = HashSet::new();
+        let mut last_flushed_wal_id: Option<u64> = None;
 
         for record_result in manifest.iter()? {
             match record_result.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))? {
@@ -181,6 +182,10 @@ where
                 }
                 ManifestEntry::NextID(id) => {
                     next_id = id;
+                }
+                ManifestEntry::FlushWal { wal_id } => {
+                    last_flushed_wal_id =
+                        Some(last_flushed_wal_id.map_or(wal_id, |current| current.max(wal_id)));
                 }
             }
         }
@@ -223,6 +228,9 @@ where
                     wal_files.push((id, path));
                 }
             }
+        }
+        if let Some(flushed_id) = last_flushed_wal_id {
+            wal_files.retain(|(id, _)| *id > flushed_id);
         }
         wal_files.sort_by_key(|(id, _)| *id);
 
@@ -295,8 +303,15 @@ where
                     compacted_count += original_sstables.len();
                     self.apply_compaction_success(sstable, level, original_sstables)?;
                 }
-                CompactionResult::Failure(e) => {
-                    eprintln!("Compaction worker failed: {}", e);
+                CompactionResult::Failure {
+                    error,
+                    original_sstables,
+                } => {
+                    eprintln!("Compaction worker failed: {}", error);
+                    let mut state = self.compaction_state.lock();
+                    for sst in original_sstables {
+                        state.compacting_ids.remove(&sst.id());
+                    }
                 }
             }
         }
@@ -312,19 +327,42 @@ where
     }
 
     fn maybe_trigger_compaction(&self, level: usize) {
-        let threshold = 4;
+        if level >= MAX_LEVEL {
+            return;
+        }
+        let count_threshold = 4;
+        let overlap_threshold = 2;
         let version = self.version.load();
-        if version.levels[level].len() < threshold {
+        let current_level_sstables = &version.levels[level];
+
+        if current_level_sstables.is_empty() {
+            return;
+        }
+
+        let target_level_idx = level + 1;
+        let target_level_sstables = version
+            .levels
+            .get(target_level_idx)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+
+        let overlap_count = Compactor::find_range_overlapping_sstables(
+            current_level_sstables,
+            target_level_sstables,
+        )
+        .len();
+
+        if current_level_sstables.len() < count_threshold && overlap_count <= overlap_threshold {
             return;
         }
 
         let mut state = self.compaction_state.lock();
-        let any_compacting = version.levels[level]
+        let any_compacting = current_level_sstables
             .iter()
             .any(|s| state.compacting_ids.contains(&s.id()));
         if !any_compacting {
-            let sstables = version.levels[level].clone();
-            self.trigger_compaction(&mut state, sstables, level + 1);
+            let sstables = current_level_sstables.clone();
+            self.trigger_compaction(&mut state, sstables, target_level_idx);
         }
     }
 

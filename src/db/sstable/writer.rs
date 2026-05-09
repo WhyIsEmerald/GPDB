@@ -61,9 +61,8 @@ where
                 max_seq = Some(seq);
             }
 
-            use std::collections::hash_map::DefaultHasher;
             use std::hash::Hasher;
-            let mut s = DefaultHasher::new();
+            let mut s = twox_hash::XxHash64::with_seed(0);
             entry.key.hash(&mut s);
             let hash = s.finish();
             if key_hashes.last() != Some(&hash) {

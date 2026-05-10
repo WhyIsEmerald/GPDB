@@ -3,6 +3,7 @@ pub mod read;
 pub mod write;
 
 use crate::db::compaction::{CompactionResult, CompactionTask, Compactor};
+use crate::db::iterator::{MergedIterator, Source};
 use crate::db::wal::WalManager;
 use crate::{
     BlockCache, DBKey, LogOperation, Manifest, ManifestEntry, MemTable, Result, SSTable, SSTableId,
@@ -74,6 +75,8 @@ where
 {
     pub(crate) db: DB<K, V>,
     pub(crate) seq: u64,
+    pub(crate) version: Arc<VersionState<K, V>>,
+    pub(crate) memtable: Arc<MemTable<K, V>>,
 }
 
 impl<K, V> Drop for Snapshot<K, V>
@@ -468,11 +471,45 @@ where
         let seq = self
             .sequence_number
             .load(std::sync::atomic::Ordering::SeqCst);
+        println!("DB::snapshot: seq={}", seq);
         self.active_snapshots.lock().insert(seq, ());
         Snapshot {
             db: self.clone(),
             seq,
+            version: self.version.load_full(),
+            memtable: self.memtable.load_full(),
         }
+    }
+
+    pub fn iter<'a>(&self, snapshot: &'a Snapshot<K, V>) -> Result<MergedIterator<'a, K, V>> {
+        let snapshot_seq = snapshot.seq;
+        let mut sources = Vec::new();
+
+        // Active memtable
+        sources.push(Source::MemTable {
+            it: snapshot.memtable.iter(),
+            snapshot_seq,
+            buffer: None,
+        });
+
+        // Immutable memtables
+        for imm in &snapshot.version.immutables {
+            sources.push(Source::MemTable {
+                it: imm.memtable.iter(),
+                snapshot_seq,
+                buffer: None,
+            });
+        }
+
+        // SSTables
+        for level in &snapshot.version.levels {
+            for sst in level {
+                let it = sst.iter()?;
+                sources.push(Source::SSTable { it, snapshot_seq });
+            }
+        }
+
+        Ok(MergedIterator::new(sources))
     }
 
     pub fn min_active_seq(&self) -> u64 {

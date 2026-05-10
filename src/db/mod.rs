@@ -2,6 +2,7 @@ pub mod cache;
 pub mod compaction;
 pub mod database;
 pub mod io;
+pub mod iterator;
 pub mod manifest;
 pub mod memtable;
 pub mod sstable;

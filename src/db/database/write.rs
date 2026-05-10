@@ -39,6 +39,10 @@ where
                 .map_or(0, |v| calculate_size(&**v));
             total_batch_size += key_size + val_size;
             let seq = self.sequence_number.fetch_add(1, Ordering::SeqCst);
+            println!(
+                "DB::write_batch: assigned seq={} for key={:?}",
+                seq, entry.key
+            );
             let log_entry = if entry.value.is_tombstone {
                 LogEntry {
                     sequence_number: seq,

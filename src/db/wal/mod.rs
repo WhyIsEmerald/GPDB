@@ -73,6 +73,11 @@ where
         Ok(())
     }
 
+    pub fn sync_all(&self) -> Result<()> {
+        self.writer.get_ref().sync_all()?;
+        Ok(())
+    }
+
     pub fn flush_to_os(&mut self) -> Result<()> {
         self.writer.flush()?;
         Ok(())
@@ -122,6 +127,11 @@ enum WalTask<K, V> {
     },
 }
 
+struct SyncTask {
+    file: File,
+    resps: Vec<Sender<Result<()>>>,
+}
+
 /// `WalManager` coordinates Group Commits and WAL rotation.
 #[derive(Debug)]
 pub struct WalManager<K, V>
@@ -139,6 +149,7 @@ where
 {
     pub fn new(dir: PathBuf, mut current_id: u64) -> Result<Self> {
         let (task_tx, task_rx) = unbounded::<WalTask<K, V>>();
+        let (sync_tx, sync_rx) = unbounded::<SyncTask>();
 
         let wal_path = dir.join(format!("{:06}.wal", current_id));
         let mut wal = if wal_path.exists() {
@@ -192,15 +203,28 @@ where
                             if result.is_ok()
                                 && last_sync_time.elapsed() >= std::time::Duration::from_millis(10)
                             {
-                                if let Err(e) = wal.flush() {
-                                    result = Err(e);
+                                // Delegate sync_all to SyncWorker to avoid blocking the worker thread
+                                if let Ok(file) = wal.writer.get_ref().try_clone() {
+                                    let _ = sync_tx.send(SyncTask {
+                                        file,
+                                        resps: batch_resps.clone(),
+                                    });
                                 }
                                 last_sync_time = std::time::Instant::now();
+                            } else if result.is_ok() {
+                                for r in &batch_resps {
+                                    let _ = r.send(result.clone());
+                                }
+                            }
+                        } else {
+                            for r in &batch_resps {
+                                let _ = r.send(result.clone());
                             }
                         }
 
-                        for r in batch_resps {
-                            let _ = r.send(result.clone());
+                        if result.is_ok()
+                            && last_sync_time.elapsed() >= std::time::Duration::from_millis(10)
+                        {
                         }
 
                         if let Some(resp) = next_rotate {
@@ -238,6 +262,15 @@ where
                         let path = dir.join(format!("{:06}.wal", id));
                         let _ = resp_tx.send(std::fs::remove_file(path).map_err(Into::into));
                     }
+                }
+            }
+        });
+
+        std::thread::spawn(move || {
+            while let Ok(SyncTask { file, resps }) = sync_rx.recv() {
+                let result = file.sync_all().map_err(Into::into);
+                for r in resps {
+                    let _ = r.send(result.clone());
                 }
             }
         });

@@ -1,4 +1,5 @@
-use gpdb::{LogEntry, LogOperation, Wal, WalManager};
+use gpdb::{DB, LogEntry, LogOperation, Wal, WalManager, WriteBatch};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -60,4 +61,40 @@ fn wal_recovery_multiple_files() {
     let next_id = wm.rotate().unwrap();
     assert_eq!(next_id, 1);
     assert!(path.join("000002.wal").exists());
+}
+
+#[test]
+fn test_wal_crash_and_recover_stress() {
+    let (_tmp_dir, path) = setup();
+    let mut expected_data = HashMap::new();
+    let memtable_size = 10 * 1024 * 1024;
+
+    let mut db = DB::open(&path, memtable_size).expect("Failed to open DB");
+
+    for i in 0..100 {
+        let mut batch = WriteBatch::new();
+        for j in 0..10 {
+            let key = format!("key_{}_{}", i, j);
+            let val = format!("val_{}_{}", i, j);
+            batch.put(key.clone(), val.clone());
+            expected_data.insert(key, val);
+        }
+
+        db.write_batch(batch).expect("Write batch failed");
+
+        if i % 10 == 0 {
+            drop(db);
+            db = DB::open(&path, memtable_size).expect("Failed to re-open DB after crash");
+        }
+    }
+
+    for (key, val) in &expected_data {
+        let result = db.get(key, None).expect("Get failed");
+        assert_eq!(
+            result.value.map(|v| v.to_string()),
+            Some(val.clone()),
+            "Data loss for key: {}",
+            key
+        );
+    }
 }

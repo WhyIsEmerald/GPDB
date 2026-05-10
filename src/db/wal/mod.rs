@@ -73,6 +73,11 @@ where
         Ok(())
     }
 
+    pub fn flush_to_os(&mut self) -> Result<()> {
+        self.writer.flush()?;
+        Ok(())
+    }
+
     pub fn iter(&self) -> Result<WalIterator<K, V>> {
         let file = OpenOptions::new().read(true).open(&self.path)?;
         Ok(WalIterator {
@@ -143,6 +148,7 @@ where
         };
 
         std::thread::spawn(move || {
+            let mut last_sync_time = std::time::Instant::now();
             while let Ok(first_task) = task_rx.recv() {
                 match first_task {
                     WalTask::Write { entries, resp_tx } => {
@@ -178,9 +184,19 @@ where
                             }
                         }
 
-                        // Flush only if all appends succeeded
+                        // Adaptive Sync: always flush to OS, but sync_all based on interval
                         if result.is_ok() {
-                            result = wal.flush();
+                            if let Err(e) = wal.flush_to_os() {
+                                result = Err(e);
+                            }
+                            if result.is_ok()
+                                && last_sync_time.elapsed() >= std::time::Duration::from_millis(10)
+                            {
+                                if let Err(e) = wal.flush() {
+                                    result = Err(e);
+                                }
+                                last_sync_time = std::time::Instant::now();
+                            }
                         }
 
                         for r in batch_resps {

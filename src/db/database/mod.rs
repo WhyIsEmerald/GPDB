@@ -138,6 +138,7 @@ where
     pub(crate) max_memtable_size: usize,
     pub(crate) memtable_size: AtomicUsize,
     pub(crate) compaction_tx: mpsc::Sender<CompactionTask<K, V>>,
+    pub(crate) min_sync_wal_interval: std::time::Duration,
 }
 
 #[derive(Debug)]
@@ -273,6 +274,7 @@ where
                 max_memtable_size,
                 memtable_size: AtomicUsize::new(0),
                 compaction_tx: task_tx,
+                min_sync_wal_interval: std::time::Duration::from_millis(10),
             }),
             sequence_number: Arc::new(AtomicU64::new(max_seq + 1)),
             active_snapshots: Arc::new(Mutex::new(BTreeMap::new())),

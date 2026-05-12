@@ -14,6 +14,7 @@ use std::path::Path;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use xorf::{Xor8, Xor16};
+use zstd;
 
 impl<K, V> SSTable<K, V>
 where
@@ -146,8 +147,19 @@ where
                     .map_err(|_| Error::Corruption("Lock poisoned".to_string()))?;
                 reader.seek(SeekFrom::Start(block_offset))?;
 
-                let block: DataBlock<K, V> = read_record(&mut *reader)?
-                    .ok_or_else(|| Error::Corruption("Data block is missing".to_string()))?;
+                let block = if self.meta.compression_type == crate::COMPRESSION_ZSTD {
+                    let compressed_bytes: Vec<u8> =
+                        read_record(&mut *reader)?.ok_or_else(|| {
+                            Error::Corruption("Compressed data block is missing".to_string())
+                        })?;
+                    let decompressed_bytes = zstd::decode_all(&compressed_bytes[..])
+                        .map_err(|e| Error::Io(Arc::new(e)))?;
+                    bincode::deserialize(&decompressed_bytes)
+                        .map_err(|e| Error::Serialization(e.to_string()))?
+                } else {
+                    read_record(&mut *reader)?
+                        .ok_or_else(|| Error::Corruption("Data block is missing".to_string()))?
+                };
                 let arc_block = Arc::new(block);
                 cache.insert(self.id, block_offset, Arc::clone(&arc_block));
                 arc_block
@@ -159,8 +171,18 @@ where
                 .map_err(|_| Error::Corruption("Lock poisoned".to_string()))?;
             reader.seek(SeekFrom::Start(block_offset))?;
 
-            let block: DataBlock<K, V> = read_record(&mut *reader)?
-                .ok_or_else(|| Error::Corruption("Data block is missing".to_string()))?;
+            let block = if self.meta.compression_type == crate::COMPRESSION_ZSTD {
+                let compressed_bytes: Vec<u8> = read_record(&mut *reader)?.ok_or_else(|| {
+                    Error::Corruption("Compressed data block is missing".to_string())
+                })?;
+                let decompressed_bytes =
+                    zstd::decode_all(&compressed_bytes[..]).map_err(|e| Error::Io(Arc::new(e)))?;
+                bincode::deserialize(&decompressed_bytes)
+                    .map_err(|e| Error::Serialization(e.to_string()))?
+            } else {
+                read_record(&mut *reader)?
+                    .ok_or_else(|| Error::Corruption("Data block is missing".to_string()))?
+            };
             Arc::new(block)
         };
 

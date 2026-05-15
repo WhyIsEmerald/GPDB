@@ -117,7 +117,35 @@ where
         };
 
         let index_offset: u64 = filter_offset + filter_size;
-        let index_size: u64 = write_record(&mut writer, &sparse_index)?;
+
+        let mut index_bytes = Vec::new();
+        let mut last_offset = 0u64;
+
+        // Write number of entries
+        let mut varint_buf = Vec::new();
+        crate::db::io::write_varint(&mut varint_buf, sparse_index.len() as u64)?;
+        index_bytes.extend_from_slice(&varint_buf);
+
+        for (key, offset) in &sparse_index {
+            let key_bytes =
+                bincode::serialize(key).map_err(|e| Error::Serialization(e.to_string()))?;
+
+            // Write key length and then key bytes
+            varint_buf.clear();
+            crate::db::io::write_varint(&mut varint_buf, key_bytes.len() as u64)?;
+            index_bytes.extend_from_slice(&varint_buf);
+            index_bytes.extend_from_slice(&key_bytes);
+
+            // Write offset as delta
+            let delta = offset - last_offset;
+            varint_buf.clear();
+            crate::db::io::write_varint(&mut varint_buf, delta)?;
+            index_bytes.extend_from_slice(&varint_buf);
+
+            last_offset = *offset;
+        }
+
+        let index_size = write_record(&mut writer, &index_bytes)?;
 
         let meta_offset: u64 = index_offset + index_size;
         let meta = TableMeta {

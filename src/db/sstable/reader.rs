@@ -90,13 +90,28 @@ where
         };
 
         reader.seek(SeekFrom::Start(index_offset))?;
-        let index_raw: BTreeMap<K, u64> = read_record(&mut reader)?.ok_or_else(|| {
+        let index_bytes: Vec<u8> = read_record(&mut reader)?.ok_or_else(|| {
             Error::Corruption("SSTable index block is missing or empty".to_string())
         })?;
-        let index = index_raw
-            .into_iter()
-            .map(|(k, v)| (Arc::new(k), v))
-            .collect();
+
+        let mut index = BTreeMap::new();
+        let mut cursor = std::io::Cursor::new(index_bytes);
+
+        let num_entries = crate::db::io::read_varint(&mut cursor)?;
+        let mut last_offset = 0u64;
+
+        for _ in 0..num_entries {
+            let key_len = crate::db::io::read_varint(&mut cursor)? as usize;
+            let mut key_buf = vec![0u8; key_len];
+            std::io::Read::read_exact(&mut cursor, &mut key_buf)?;
+            let key: K =
+                bincode::deserialize(&key_buf).map_err(|e| Error::Serialization(e.to_string()))?;
+
+            let delta = crate::db::io::read_varint(&mut cursor)?;
+            let offset = last_offset + delta;
+            index.insert(Arc::new(key), offset);
+            last_offset = offset;
+        }
 
         Ok(SSTable {
             path: path.to_path_buf(),

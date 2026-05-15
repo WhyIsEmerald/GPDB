@@ -5,7 +5,8 @@ use crate::db::sstable::{
     FILTER_TYPE_XOR8, FILTER_TYPE_XOR16, FORMAT_VERSION, MAGIC_NUMBER, SSTable,
 };
 use crate::{
-    COMPRESSION_NONE, COMPRESSION_ZSTD, DBKey, Entry, Error, MemTable, Result, SSTableId, TableMeta,
+    COMPRESSION_LZ4, COMPRESSION_NONE, COMPRESSION_ZSTD, DBKey, Entry, Error, MemTable, Result,
+    SSTableId, TableMeta,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -45,6 +46,11 @@ where
         let mut num_entries = 0;
 
         let mut current_offset = 0;
+        let compression_type = if level == 0 {
+            COMPRESSION_LZ4
+        } else {
+            COMPRESSION_ZSTD
+        };
         let mut builder = DeltaBlockBuilder::new(BLOCK_SIZE);
 
         for item in iter {
@@ -81,8 +87,12 @@ where
                 let block = builder.finish();
                 let serialized_block = bincode::serialize(&block)
                     .map_err(|e| crate::Error::Serialization(e.to_string()))?;
-                let compressed_block = zstd::encode_all(&serialized_block[..], 3)
-                    .map_err(|e| crate::Error::Io(Arc::new(e)))?;
+                let compressed_block = if compression_type == COMPRESSION_LZ4 {
+                    lz4_flex::compress_prepend_size(&serialized_block)
+                } else {
+                    zstd::encode_all(&serialized_block[..], 3)
+                        .map_err(|e| crate::Error::Io(Arc::new(e)))?
+                };
                 let bytes_written = write_record(&mut writer, &compressed_block)?;
                 current_offset += bytes_written;
             }
@@ -92,8 +102,12 @@ where
             let block = builder.finish();
             let serialized_block = bincode::serialize(&block)
                 .map_err(|e| crate::Error::Serialization(e.to_string()))?;
-            let compressed_block = zstd::encode_all(&serialized_block[..], 3)
-                .map_err(|e| crate::Error::Io(Arc::new(e)))?;
+            let compressed_block = if compression_type == COMPRESSION_LZ4 {
+                lz4_flex::compress_prepend_size(&serialized_block)
+            } else {
+                zstd::encode_all(&serialized_block[..], 3)
+                    .map_err(|e| crate::Error::Io(Arc::new(e)))?
+            };
             let bytes_written = write_record(&mut writer, &compressed_block)?;
             current_offset += bytes_written;
         }
@@ -153,7 +167,7 @@ where
             max_key: (*max_key).clone(),
             num_entries,
             filter_type,
-            compression_type: COMPRESSION_ZSTD,
+            compression_type,
         };
         write_record(&mut writer, &meta)?;
 

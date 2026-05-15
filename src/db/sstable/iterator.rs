@@ -39,12 +39,19 @@ where
             return Ok(false);
         }
 
-        let block = if self.compression_type == crate::COMPRESSION_ZSTD {
+        let block = if self.compression_type == crate::COMPRESSION_ZSTD
+            || self.compression_type == crate::COMPRESSION_LZ4
+        {
             let compressed_bytes: Vec<u8> = read_record(&mut self.reader)?.ok_or_else(|| {
                 crate::Error::Corruption("Compressed data block is missing".to_string())
             })?;
-            let decompressed_bytes = zstd::decode_all(&compressed_bytes[..])
-                .map_err(|e| crate::Error::Io(std::sync::Arc::new(e)))?;
+            let decompressed_bytes = if self.compression_type == crate::COMPRESSION_ZSTD {
+                zstd::decode_all(&compressed_bytes[..])
+                    .map_err(|e| crate::Error::Io(std::sync::Arc::new(e)))?
+            } else {
+                lz4_flex::decompress_size_prepended(&compressed_bytes)
+                    .map_err(|e| crate::Error::Corruption(e.to_string()))?
+            };
             bincode::deserialize(&decompressed_bytes)
                 .map_err(|e| crate::Error::Serialization(e.to_string()))?
         } else {

@@ -15,6 +15,7 @@ pub const FILTER_TYPE_XOR16: u8 = 1;
 
 pub const COMPRESSION_NONE: u8 = 0;
 pub const COMPRESSION_ZSTD: u8 = 1;
+pub const COMPRESSION_LZ4: u8 = 2;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// Metadata for an SSTable, stored in the file.

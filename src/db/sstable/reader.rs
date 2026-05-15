@@ -4,6 +4,7 @@ use crate::db::sstable::{
     FILTER_TYPE_XOR16, FOOTER_SIZE, FORMAT_VERSION, FilterVariant, MAGIC_NUMBER, SSTable,
 };
 use crate::{DBKey, Error, Result, SSTableId, TableMeta, ValueEntry};
+use lz4_flex;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
@@ -162,13 +163,21 @@ where
                     .map_err(|_| Error::Corruption("Lock poisoned".to_string()))?;
                 reader.seek(SeekFrom::Start(block_offset))?;
 
-                let block = if self.meta.compression_type == crate::COMPRESSION_ZSTD {
+                let block = if self.meta.compression_type == crate::COMPRESSION_ZSTD
+                    || self.meta.compression_type == crate::COMPRESSION_LZ4
+                {
                     let compressed_bytes: Vec<u8> =
                         read_record(&mut *reader)?.ok_or_else(|| {
                             Error::Corruption("Compressed data block is missing".to_string())
                         })?;
-                    let decompressed_bytes = zstd::decode_all(&compressed_bytes[..])
-                        .map_err(|e| Error::Io(Arc::new(e)))?;
+                    let decompressed_bytes =
+                        if self.meta.compression_type == crate::COMPRESSION_ZSTD {
+                            zstd::decode_all(&compressed_bytes[..])
+                                .map_err(|e| Error::Io(Arc::new(e)))?
+                        } else {
+                            lz4_flex::decompress_size_prepended(&compressed_bytes)
+                                .map_err(|e| Error::Corruption(e.to_string()))?
+                        };
                     bincode::deserialize(&decompressed_bytes)
                         .map_err(|e| Error::Serialization(e.to_string()))?
                 } else {
@@ -186,12 +195,18 @@ where
                 .map_err(|_| Error::Corruption("Lock poisoned".to_string()))?;
             reader.seek(SeekFrom::Start(block_offset))?;
 
-            let block = if self.meta.compression_type == crate::COMPRESSION_ZSTD {
+            let block = if self.meta.compression_type == crate::COMPRESSION_ZSTD
+                || self.meta.compression_type == crate::COMPRESSION_LZ4
+            {
                 let compressed_bytes: Vec<u8> = read_record(&mut *reader)?.ok_or_else(|| {
                     Error::Corruption("Compressed data block is missing".to_string())
                 })?;
-                let decompressed_bytes =
-                    zstd::decode_all(&compressed_bytes[..]).map_err(|e| Error::Io(Arc::new(e)))?;
+                let decompressed_bytes = if self.meta.compression_type == crate::COMPRESSION_ZSTD {
+                    zstd::decode_all(&compressed_bytes[..]).map_err(|e| Error::Io(Arc::new(e)))?
+                } else {
+                    lz4_flex::decompress_size_prepended(&compressed_bytes)
+                        .map_err(|e| Error::Corruption(e.to_string()))?
+                };
                 bincode::deserialize(&decompressed_bytes)
                     .map_err(|e| Error::Serialization(e.to_string()))?
             } else {

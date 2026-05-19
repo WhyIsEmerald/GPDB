@@ -136,6 +136,7 @@ where
         Ok(SSTableIterator::new(
             BufReader::new(file),
             self.filter_offset,
+            self.meta.compression_type,
         ))
     }
 }

@@ -15,6 +15,8 @@ arc-swap = "1.7"
 crossbeam-channel = "0.5"
 xorf = { version = "0.11", features = ["serde"] }
 twox-hash = "1.6"
+zstd = "0.13"
+lz4_flex = "0.11"
 
 [dev-dependencies]
 criterion = "0.5"

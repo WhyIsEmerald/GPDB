@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::mpsc;
 
 pub(crate) const MANIFEST_FILE_NAME: &str = "MANIFEST";
-pub(crate) const MAX_LEVEL: usize = 7;
+pub const MAX_LEVEL: usize = 7;
 
 /// An immutable point-in-time view of the database's SSTables and Immutable MemTables.
 #[derive(Debug)]

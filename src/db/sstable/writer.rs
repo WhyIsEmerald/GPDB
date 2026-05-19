@@ -4,7 +4,10 @@ use crate::db::sstable::datablock::BLOCK_SIZE;
 use crate::db::sstable::{
     FILTER_TYPE_XOR8, FILTER_TYPE_XOR16, FORMAT_VERSION, MAGIC_NUMBER, SSTable,
 };
-use crate::{COMPRESSION_NONE, DBKey, Entry, Error, MemTable, Result, SSTableId, TableMeta};
+use crate::{
+    COMPRESSION_LZ4, COMPRESSION_NONE, COMPRESSION_ZSTD, DBKey, Entry, Error, MemTable, Result,
+    SSTableId, TableMeta,
+};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
@@ -43,6 +46,11 @@ where
         let mut num_entries = 0;
 
         let mut current_offset = 0;
+        let compression_type = if level == 0 {
+            COMPRESSION_LZ4
+        } else {
+            COMPRESSION_ZSTD
+        };
         let mut builder = DeltaBlockBuilder::new(BLOCK_SIZE);
 
         for item in iter {
@@ -77,14 +85,30 @@ where
 
             if builder.is_full() {
                 let block = builder.finish();
-                let bytes_written = write_record(&mut writer, &block)?;
+                let serialized_block = bincode::serialize(&block)
+                    .map_err(|e| crate::Error::Serialization(e.to_string()))?;
+                let compressed_block = if compression_type == COMPRESSION_LZ4 {
+                    lz4_flex::compress_prepend_size(&serialized_block)
+                } else {
+                    zstd::encode_all(&serialized_block[..], 3)
+                        .map_err(|e| crate::Error::Io(Arc::new(e)))?
+                };
+                let bytes_written = write_record(&mut writer, &compressed_block)?;
                 current_offset += bytes_written;
             }
         }
 
         if !builder.is_empty() {
             let block = builder.finish();
-            let bytes_written = write_record(&mut writer, &block)?;
+            let serialized_block = bincode::serialize(&block)
+                .map_err(|e| crate::Error::Serialization(e.to_string()))?;
+            let compressed_block = if compression_type == COMPRESSION_LZ4 {
+                lz4_flex::compress_prepend_size(&serialized_block)
+            } else {
+                zstd::encode_all(&serialized_block[..], 3)
+                    .map_err(|e| crate::Error::Io(Arc::new(e)))?
+            };
+            let bytes_written = write_record(&mut writer, &compressed_block)?;
             current_offset += bytes_written;
         }
 
@@ -107,7 +131,35 @@ where
         };
 
         let index_offset: u64 = filter_offset + filter_size;
-        let index_size: u64 = write_record(&mut writer, &sparse_index)?;
+
+        let mut index_bytes = Vec::new();
+        let mut last_offset = 0u64;
+
+        // Write number of entries
+        let mut varint_buf = Vec::new();
+        crate::db::io::write_varint(&mut varint_buf, sparse_index.len() as u64)?;
+        index_bytes.extend_from_slice(&varint_buf);
+
+        for (key, offset) in &sparse_index {
+            let key_bytes =
+                bincode::serialize(key).map_err(|e| Error::Serialization(e.to_string()))?;
+
+            // Write key length and then key bytes
+            varint_buf.clear();
+            crate::db::io::write_varint(&mut varint_buf, key_bytes.len() as u64)?;
+            index_bytes.extend_from_slice(&varint_buf);
+            index_bytes.extend_from_slice(&key_bytes);
+
+            // Write offset as delta
+            let delta = offset - last_offset;
+            varint_buf.clear();
+            crate::db::io::write_varint(&mut varint_buf, delta)?;
+            index_bytes.extend_from_slice(&varint_buf);
+
+            last_offset = *offset;
+        }
+
+        let index_size = write_record(&mut writer, &index_bytes)?;
 
         let meta_offset: u64 = index_offset + index_size;
         let meta = TableMeta {
@@ -115,7 +167,7 @@ where
             max_key: (*max_key).clone(),
             num_entries,
             filter_type,
-            compression_type: COMPRESSION_NONE,
+            compression_type,
         };
         write_record(&mut writer, &meta)?;
 

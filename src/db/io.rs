@@ -72,3 +72,40 @@ pub fn read_record<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<Optio
 
     Ok(Some(data))
 }
+
+pub fn write_varint<W: Write>(writer: &mut W, mut value: u64) -> Result<u64> {
+    let mut bytes_written = 0;
+    loop {
+        let mut byte = (value & 0x7F) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+            writer.write_all(&[byte])?;
+            bytes_written += 1;
+        } else {
+            writer.write_all(&[byte])?;
+            bytes_written += 1;
+            break;
+        }
+    }
+    Ok(bytes_written)
+}
+
+pub fn read_varint<R: Read>(reader: &mut R) -> Result<u64> {
+    let mut value = 0u64;
+    let mut shift = 0;
+    loop {
+        let mut buf = [0u8; 1];
+        reader.read_exact(&mut buf)?;
+        let byte = buf[0];
+        value |= ((byte & 0x7F) as u64) << shift;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+        if shift >= 64 {
+            return Err(Error::Corruption("Varint overflow".to_string()));
+        }
+    }
+    Ok(value)
+}

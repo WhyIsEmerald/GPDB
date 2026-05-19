@@ -4,6 +4,7 @@ use crate::db::sstable::{
     FILTER_TYPE_XOR16, FOOTER_SIZE, FORMAT_VERSION, FilterVariant, MAGIC_NUMBER, SSTable,
 };
 use crate::{DBKey, Error, Result, SSTableId, TableMeta, ValueEntry};
+use lz4_flex;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
@@ -14,6 +15,7 @@ use std::path::Path;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use xorf::{Xor8, Xor16};
+use zstd;
 
 impl<K, V> SSTable<K, V>
 where
@@ -89,13 +91,28 @@ where
         };
 
         reader.seek(SeekFrom::Start(index_offset))?;
-        let index_raw: BTreeMap<K, u64> = read_record(&mut reader)?.ok_or_else(|| {
+        let index_bytes: Vec<u8> = read_record(&mut reader)?.ok_or_else(|| {
             Error::Corruption("SSTable index block is missing or empty".to_string())
         })?;
-        let index = index_raw
-            .into_iter()
-            .map(|(k, v)| (Arc::new(k), v))
-            .collect();
+
+        let mut index = BTreeMap::new();
+        let mut cursor = std::io::Cursor::new(index_bytes);
+
+        let num_entries = crate::db::io::read_varint(&mut cursor)?;
+        let mut last_offset = 0u64;
+
+        for _ in 0..num_entries {
+            let key_len = crate::db::io::read_varint(&mut cursor)? as usize;
+            let mut key_buf = vec![0u8; key_len];
+            std::io::Read::read_exact(&mut cursor, &mut key_buf)?;
+            let key: K =
+                bincode::deserialize(&key_buf).map_err(|e| Error::Serialization(e.to_string()))?;
+
+            let delta = crate::db::io::read_varint(&mut cursor)?;
+            let offset = last_offset + delta;
+            index.insert(Arc::new(key), offset);
+            last_offset = offset;
+        }
 
         Ok(SSTable {
             path: path.to_path_buf(),
@@ -146,8 +163,27 @@ where
                     .map_err(|_| Error::Corruption("Lock poisoned".to_string()))?;
                 reader.seek(SeekFrom::Start(block_offset))?;
 
-                let block: DataBlock<K, V> = read_record(&mut *reader)?
-                    .ok_or_else(|| Error::Corruption("Data block is missing".to_string()))?;
+                let block = if self.meta.compression_type == crate::COMPRESSION_ZSTD
+                    || self.meta.compression_type == crate::COMPRESSION_LZ4
+                {
+                    let compressed_bytes: Vec<u8> =
+                        read_record(&mut *reader)?.ok_or_else(|| {
+                            Error::Corruption("Compressed data block is missing".to_string())
+                        })?;
+                    let decompressed_bytes =
+                        if self.meta.compression_type == crate::COMPRESSION_ZSTD {
+                            zstd::decode_all(&compressed_bytes[..])
+                                .map_err(|e| Error::Io(Arc::new(e)))?
+                        } else {
+                            lz4_flex::decompress_size_prepended(&compressed_bytes)
+                                .map_err(|e| Error::Corruption(e.to_string()))?
+                        };
+                    bincode::deserialize(&decompressed_bytes)
+                        .map_err(|e| Error::Serialization(e.to_string()))?
+                } else {
+                    read_record(&mut *reader)?
+                        .ok_or_else(|| Error::Corruption("Data block is missing".to_string()))?
+                };
                 let arc_block = Arc::new(block);
                 cache.insert(self.id, block_offset, Arc::clone(&arc_block));
                 arc_block
@@ -159,8 +195,24 @@ where
                 .map_err(|_| Error::Corruption("Lock poisoned".to_string()))?;
             reader.seek(SeekFrom::Start(block_offset))?;
 
-            let block: DataBlock<K, V> = read_record(&mut *reader)?
-                .ok_or_else(|| Error::Corruption("Data block is missing".to_string()))?;
+            let block = if self.meta.compression_type == crate::COMPRESSION_ZSTD
+                || self.meta.compression_type == crate::COMPRESSION_LZ4
+            {
+                let compressed_bytes: Vec<u8> = read_record(&mut *reader)?.ok_or_else(|| {
+                    Error::Corruption("Compressed data block is missing".to_string())
+                })?;
+                let decompressed_bytes = if self.meta.compression_type == crate::COMPRESSION_ZSTD {
+                    zstd::decode_all(&compressed_bytes[..]).map_err(|e| Error::Io(Arc::new(e)))?
+                } else {
+                    lz4_flex::decompress_size_prepended(&compressed_bytes)
+                        .map_err(|e| Error::Corruption(e.to_string()))?
+                };
+                bincode::deserialize(&decompressed_bytes)
+                    .map_err(|e| Error::Serialization(e.to_string()))?
+            } else {
+                read_record(&mut *reader)?
+                    .ok_or_else(|| Error::Corruption("Data block is missing".to_string()))?
+            };
             Arc::new(block)
         };
 

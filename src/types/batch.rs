@@ -1,14 +1,19 @@
+//! Write batch implementation.
+//!
+//! Provides a mechanism to group multiple write operations into a single atomic unit.
+
 use crate::{DBKey, Entry, ValueEntry};
 use serde::{Serialize, de::DeserializeOwned};
 use std::sync::Arc;
 
-/// A batch of write operations (Put/Delete) that are applied together atomically.
+/// A struct that represents a collection of write operations applied atomically.
 #[derive(Debug, Default, Clone)]
 pub struct WriteBatch<K, V>
 where
     K: DBKey,
     V: Serialize + DeserializeOwned,
 {
+    /// The entries used for the batch.
     pub(crate) entries: Vec<Entry<K, V>>,
 }
 
@@ -53,12 +58,12 @@ where
         self.entries.len()
     }
 
-    /// Returns true if the batch is empty.
+    /// Checks if the batch is empty.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    /// Clears the batch for reuse.
+    /// Clears the batch.
     pub fn clear(&mut self) {
         self.entries.clear();
     }

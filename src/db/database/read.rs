@@ -1,12 +1,17 @@
+//! Read path implementation for the database.
+
 use crate::types::records::ValueEntry;
 use crate::{DB, DBKey, Result, types::sizable::Sizable};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::sync::Arc;
 
+/// A struct that represents the result of a read operation.
 #[derive(Debug, Serialize)]
 pub struct ReadResult<V> {
+    /// The value used for the result, or None if not found or deleted.
     pub value: Option<Arc<V>>,
+    /// The number of SSTables used for the read operation.
     pub sstables_touched: usize,
 }
 
@@ -15,6 +20,7 @@ where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
     V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
+    /// Retrieves a value for the given key.
     pub fn get(
         &self,
         key: &K,

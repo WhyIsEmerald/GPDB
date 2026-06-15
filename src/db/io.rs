@@ -1,11 +1,14 @@
+//! Low-level I/O utilities.
+//!
+//! Provides helpers for reading and writing structured records and variable-length integers.
+
 use crate::{Error, Result};
 use crc32fast::Hasher;
 use serde::{Serialize, de::DeserializeOwned};
 use std::io::{Read, Write};
 use std::sync::Arc;
 
-/// Writes a data-frame to the writer: [Checksum (4), Length (8), Data]
-/// Returns the total number of bytes written.
+/// Writes a serialized record with a checksum and length prefix to the writer.
 pub fn write_record<W: Write, T: Serialize>(writer: &mut W, data: &T) -> Result<u64> {
     let serialized_data =
         bincode::serialize(data).map_err(|e| Error::Serialization(e.to_string()))?;
@@ -22,8 +25,7 @@ pub fn write_record<W: Write, T: Serialize>(writer: &mut W, data: &T) -> Result<
     Ok(4 + 8 + len)
 }
 
-/// Reads a data-frame from the reader.
-/// Returns Ok(None) on clean EOF at the start of a record.
+/// Reads a serialized record and verifies its checksum from the reader.
 pub fn read_record<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<Option<T>> {
     let mut checksum_bytes = [0u8; 4];
     if let Err(e) = reader.read_exact(&mut checksum_bytes) {
@@ -73,6 +75,7 @@ pub fn read_record<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<Optio
     Ok(Some(data))
 }
 
+/// Writes a 64-bit integer using variable-length encoding to the writer.
 pub fn write_varint<W: Write>(writer: &mut W, mut value: u64) -> Result<u64> {
     let mut bytes_written = 0;
     loop {
@@ -91,6 +94,7 @@ pub fn write_varint<W: Write>(writer: &mut W, mut value: u64) -> Result<u64> {
     Ok(bytes_written)
 }
 
+/// Reads a 64-bit integer using variable-length encoding from the reader.
 pub fn read_varint<R: Read>(reader: &mut R) -> Result<u64> {
     let mut value = 0u64;
     let mut shift = 0;

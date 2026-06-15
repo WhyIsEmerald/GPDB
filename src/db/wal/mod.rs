@@ -8,14 +8,16 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// `Wal` provides a durable, write-ahead log.
+/// A struct that represents a durable, write-ahead log.
 #[derive(Debug)]
 pub struct Wal<K, V>
 where
     K: Serialize + DeserializeOwned,
     V: Serialize + DeserializeOwned,
 {
+    /// The path used for the WAL file on disk.
     path: PathBuf,
+    /// The writer used for appending to the WAL.
     writer: BufWriter<File>,
     _phantom: PhantomData<(K, V)>,
 }
@@ -25,6 +27,7 @@ where
     K: Serialize + DeserializeOwned,
     V: Serialize + DeserializeOwned,
 {
+    /// Creates a new WAL at the specified path.
     pub fn create(path: &Path) -> Result<Self> {
         let file = OpenOptions::new()
             .write(true)
@@ -39,6 +42,7 @@ where
         })
     }
 
+    /// Opens an existing WAL at the specified path.
     pub fn open(path: &Path) -> Result<Self> {
         let file = OpenOptions::new().append(true).open(path)?;
 
@@ -49,13 +53,16 @@ where
         })
     }
 
-    pub fn append_batch(&mut self, entries: &[LogEntry<K, V>]) -> Result<()> {
+    /// Appends a batch of entries to the WAL and returns the total bytes written.
+    pub fn append_batch(&mut self, entries: &[LogEntry<K, V>]) -> Result<usize> {
+        let mut total = 0;
         for entry in entries {
-            write_record(&mut self.writer, entry)?;
+            total += write_record(&mut self.writer, entry)? as usize;
         }
-        Ok(())
+        Ok(total)
     }
 
+    /// Clears the WAL file.
     pub fn clear(&mut self) -> Result<()> {
         let file = OpenOptions::new()
             .write(true)
@@ -67,22 +74,26 @@ where
         Ok(())
     }
 
+    /// Flushes the WAL buffer to disk and performs a hardware sync.
     pub fn flush(&mut self) -> Result<()> {
         self.writer.flush()?;
         self.writer.get_ref().sync_all()?;
         Ok(())
     }
 
+    /// Performs a hardware sync of the WAL file.
     pub fn sync_all(&self) -> Result<()> {
         self.writer.get_ref().sync_all()?;
         Ok(())
     }
 
+    /// Flushes the WAL buffer to the operating system.
     pub fn flush_to_os(&mut self) -> Result<()> {
         self.writer.flush()?;
         Ok(())
     }
 
+    /// Returns an iterator over the entries in the WAL.
     pub fn iter(&self) -> Result<WalIterator<K, V>> {
         let file = OpenOptions::new().read(true).open(&self.path)?;
         Ok(WalIterator {
@@ -92,11 +103,13 @@ where
     }
 }
 
+/// A struct that represents an iterator over the entries of a WAL file.
 pub struct WalIterator<K, V>
 where
     K: Serialize + DeserializeOwned,
     V: Serialize + DeserializeOwned,
 {
+    /// The reader used for the WAL file.
     reader: BufReader<File>,
     _phantom: PhantomData<(K, V)>,
 }
@@ -125,6 +138,9 @@ enum WalTask<K, V> {
         id: u64,
         resp_tx: Sender<Result<()>>,
     },
+    Flush {
+        resp_tx: Sender<Result<()>>,
+    },
 }
 
 struct SyncTask {
@@ -132,13 +148,14 @@ struct SyncTask {
     resps: Vec<Sender<Result<()>>>,
 }
 
-/// `WalManager` coordinates Group Commits and WAL rotation.
+/// A struct that coordinates group commits and WAL rotation.
 #[derive(Debug)]
 pub struct WalManager<K, V>
 where
     K: DBKey + Send + Sync + 'static,
     V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
+    /// The channel used to send tasks to the WAL worker.
     task_tx: Sender<WalTask<K, V>>,
 }
 
@@ -147,6 +164,7 @@ where
     K: DBKey + Send + Sync + 'static,
     V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
+    /// Creates a new WalManager.
     pub fn new(dir: PathBuf, mut current_id: u64) -> Result<Self> {
         let (task_tx, task_rx) = crossbeam_channel::bounded::<WalTask<K, V>>(1024);
         let (sync_tx, sync_rx) = unbounded::<SyncTask>();
@@ -168,12 +186,12 @@ where
                         let mut next_rotate = None;
 
                         // Start batch by appending first request
-                        let mut result = wal.append_batch(&entries);
-                        if result.is_ok() {
-                            for e in entries.iter() {
-                                bytes_since_last_sync +=
-                                    bincode::serialize(e).unwrap_or_default().len();
-                            }
+                        let mut first_res = wal.append_batch(&entries);
+                        let mut result: Result<()> =
+                            first_res.as_ref().map(|_| ()).map_err(|e| e.clone());
+
+                        if let Ok(bytes) = first_res {
+                            bytes_since_last_sync += bytes;
                         }
 
                         // Group multiple writes if first succeeded
@@ -184,14 +202,12 @@ where
                                         entries: next_entries,
                                         resp_tx: next_resp,
                                     } => {
-                                        result = wal.append_batch(&next_entries);
-                                        batch_resps.push(next_resp);
-                                        if result.is_err() {
+                                        if let Ok(bytes) = wal.append_batch(&next_entries) {
+                                            bytes_since_last_sync += bytes;
+                                            batch_resps.push(next_resp);
+                                        } else {
+                                            result = wal.append_batch(&next_entries).map(|_| ());
                                             break;
-                                        }
-                                        for e in next_entries.iter() {
-                                            bytes_since_last_sync +=
-                                                bincode::serialize(e).unwrap_or_default().len();
                                         }
                                     }
                                     WalTask::Rotate { resp_tx: rot_tx } => {
@@ -218,10 +234,22 @@ where
                             {
                                 // Delegate sync_all to SyncWorker to avoid blocking the worker thread
                                 if let Ok(file) = wal.writer.get_ref().try_clone() {
-                                    let _ = sync_tx.send(SyncTask {
+                                    if let Err(_) = sync_tx.send(SyncTask {
                                         file,
                                         resps: batch_resps.clone(),
-                                    });
+                                    }) {
+                                        for r in &batch_resps {
+                                            let _ = r.send(Err(Error::Corruption(
+                                                "Sync worker channel closed".into(),
+                                            )));
+                                        }
+                                    }
+                                } else {
+                                    for r in &batch_resps {
+                                        let _ = r.send(Err(Error::Corruption(
+                                            "Failed to clone WAL file".into(),
+                                        )));
+                                    }
                                 }
                                 last_sync_time = std::time::Instant::now();
                                 bytes_since_last_sync = 0;
@@ -271,6 +299,14 @@ where
                         let path = dir.join(format!("{:06}.wal", id));
                         let _ = resp_tx.send(std::fs::remove_file(path).map_err(Into::into));
                     }
+                    WalTask::Flush { resp_tx } => {
+                        let res = wal.flush();
+                        if res.is_ok() {
+                            last_sync_time = std::time::Instant::now();
+                            bytes_since_last_sync = 0;
+                        }
+                        let _ = resp_tx.send(res);
+                    }
                 }
             }
         });
@@ -287,6 +323,7 @@ where
         Ok(Self { task_tx })
     }
 
+    /// Submits entries to the WAL for durable storage.
     pub fn submit(&self, entries: Arc<Vec<LogEntry<K, V>>>) -> Result<()> {
         let (resp_tx, resp_rx) = unbounded();
         self.task_tx
@@ -297,6 +334,7 @@ where
             .map_err(|_| Error::Corruption("WAL worker dropped response".into()))?
     }
 
+    /// Rotates the current WAL file to a new one.
     pub fn rotate(&self) -> Result<u64> {
         let (resp_tx, resp_rx) = unbounded();
         self.task_tx
@@ -307,10 +345,22 @@ where
             .map_err(|_| Error::Corruption("WAL worker dropped response".into()))?
     }
 
+    /// Deletes a specific WAL file by ID.
     pub fn delete(&self, id: u64) -> Result<()> {
         let (resp_tx, resp_rx) = unbounded();
         self.task_tx
             .send(WalTask::Delete { id, resp_tx })
+            .map_err(|_| Error::Corruption("WAL worker crashed".into()))?;
+        resp_rx
+            .recv()
+            .map_err(|_| Error::Corruption("WAL worker dropped response".into()))?
+    }
+
+    /// Forcefully synchronizes the WAL to disk.
+    pub fn flush(&self) -> Result<()> {
+        let (resp_tx, resp_rx) = unbounded();
+        self.task_tx
+            .send(WalTask::Flush { resp_tx })
             .map_err(|_| Error::Corruption("WAL worker crashed".into()))?;
         resp_rx
             .recv()

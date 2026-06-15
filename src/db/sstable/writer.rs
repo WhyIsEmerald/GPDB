@@ -22,6 +22,7 @@ where
     K: DBKey + Send + Sync + 'static,
     V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
+    /// Writes an SSTable from a sorted iterator.
     pub fn write_from_iter<I>(
         path: &Path,
         iter: I,
@@ -186,6 +187,7 @@ where
         Self::open(path, block_cache)
     }
 
+    /// Writes an SSTable from a MemTable.
     pub fn write_from_memtable(
         path: &Path,
         memtable: &MemTable<K, V>,

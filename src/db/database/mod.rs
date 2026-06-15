@@ -1,3 +1,5 @@
+//! Database core orchestration and state management.
+
 pub mod flush;
 pub mod read;
 pub mod write;
@@ -19,27 +21,34 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::mpsc;
 
+/// The name used for the manifest file.
 pub(crate) const MANIFEST_FILE_NAME: &str = "MANIFEST";
+/// The maximum number of LSM levels.
 pub const MAX_LEVEL: usize = 7;
 
-/// An immutable point-in-time view of the database's SSTables and Immutable MemTables.
+/// A struct that represents an immutable point-in-time view of the database's SSTables and Immutable MemTables.
 #[derive(Debug)]
 pub struct VersionState<K, V>
 where
     K: DBKey + Send + Sync + 'static,
     V: Serialize + DeserializeOwned + Send + Sync + 'static + Sizable,
 {
+    /// The SSTables grouped by level.
     pub levels: Vec<Vec<SSTable<K, V>>>,
+    /// The MemTables awaiting flush to SSTables.
     pub immutables: Vec<ImmutableMemTable<K, V>>,
 }
 
 #[derive(Debug)]
+/// A struct that represents an immutable MemTable awaiting flush to SSTables.
 pub struct ImmutableMemTable<K, V>
 where
     K: DBKey + Send + Sync + 'static,
     V: Serialize + DeserializeOwned + Send + Sync + 'static + Sizable,
 {
+    /// The reference to the underlying MemTable.
     pub memtable: Arc<MemTable<K, V>>,
+    /// The ID of the last WAL entry associated with this memtable.
     pub wal_id: u64,
 }
 
@@ -61,21 +70,26 @@ where
     K: DBKey + Send + Sync + 'static,
     V: Serialize + DeserializeOwned + Send + Sync + 'static + Sizable,
 {
+    /// Creates a new VersionState.
     pub fn new(levels: Vec<Vec<SSTable<K, V>>>, immutables: Vec<ImmutableMemTable<K, V>>) -> Self {
         Self { levels, immutables }
     }
 }
 
-/// A RAII handle that keeps a database snapshot active.
+/// A struct that represents a RAII handle that keeps a database snapshot active.
 #[derive(Debug)]
 pub struct Snapshot<K, V>
 where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
     V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
+    /// The reference to the database.
     pub(crate) db: DB<K, V>,
+    /// The sequence number at the time of snapshot.
     pub(crate) seq: u64,
+    /// The view of the database state at snapshot time.
     pub(crate) version: Arc<VersionState<K, V>>,
+    /// The MemTable state at snapshot time.
     pub(crate) memtable: Arc<MemTable<K, V>>,
 }
 
@@ -89,23 +103,34 @@ where
     }
 }
 
-/// The public handle to the database.
+/// A struct that represents the public handle to the database.
 #[derive(Debug)]
 pub struct DB<K, V>
 where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
     V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
+    /// The active memtable used for writes.
     pub(crate) memtable: Arc<ArcSwap<MemTable<K, V>>>,
+    /// The write-ahead log manager.
     pub(crate) wal: Arc<WalManager<K, V>>,
+    /// The metadata manager used for SSTable versions.
     pub(crate) manifest: Arc<Mutex<Manifest>>,
+    /// The current global version state.
     pub(crate) version: Arc<ArcSwap<VersionState<K, V>>>,
+    /// The cache used for SSTable data blocks.
     pub(crate) block_cache: Arc<BlockCache<K, V>>,
+    /// The state used for ongoing compaction tasks.
     pub(crate) compaction_state: Arc<Mutex<CompactionState<K, V>>>,
+    /// The mutex used to synchronize flush operations.
     pub(crate) flush_mutex: Arc<Mutex<()>>,
+    /// The database configuration.
     pub(crate) config: Arc<DBConfig<K, V>>,
+    /// The global monotonically increasing sequence number.
     pub(crate) sequence_number: Arc<AtomicU64>,
+    /// The set of active snapshot sequence numbers.
     pub(crate) active_snapshots: Arc<Mutex<BTreeMap<u64, ()>>>,
+    /// The files pending deletion after snapshot expiry.
     pub(crate) pending_deletions: Arc<Mutex<Vec<(PathBuf, u64)>>>,
 }
 
@@ -137,10 +162,15 @@ where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
     V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
+    /// The path used for the database directory.
     pub(crate) path: PathBuf,
+    /// The maximum size of a memtable before flushing.
     pub(crate) max_memtable_size: usize,
+    /// The current size of the active memtable.
     pub(crate) memtable_size: AtomicUsize,
+    /// The channel used to send compaction tasks to the worker.
     pub(crate) compaction_tx: mpsc::Sender<CompactionTask<K, V>>,
+    /// The minimum interval used between WAL syncs.
     pub(crate) min_sync_wal_interval: std::time::Duration,
 }
 
@@ -150,8 +180,11 @@ where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
     V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
+    /// The next SSTable ID used to assign.
     pub(crate) next_id: SSTableId,
+    /// The IDs of SSTables currently being compacted.
     pub(crate) compacting_ids: HashSet<SSTableId>,
+    /// The channel used to receive compaction results from the worker.
     pub(crate) compaction_rx: mpsc::Receiver<CompactionResult<K, V>>,
 }
 
@@ -160,6 +193,7 @@ where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
     V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
+    /// Opens a database at the specified path.
     pub fn open(path: &Path, max_memtable_size: usize) -> Result<Self> {
         std::fs::create_dir_all(path)?;
         let block_cache = Arc::new(BlockCache::new(32 * 1024 * 1024));
@@ -285,6 +319,7 @@ where
         })
     }
 
+    /// Processes pending compaction results and applies them to the database state.
     pub fn handle_compaction_results(&self) -> Result<usize> {
         let mut results = Vec::new();
         let mut compacted_count = 0;
@@ -324,6 +359,7 @@ where
         Ok(compacted_count)
     }
 
+    /// Checks all levels to determine if compaction should be triggered.
     fn check_all_compactions(&self) {
         let version = self.version.load();
         for level in 0..version.levels.len() {
@@ -331,6 +367,7 @@ where
         }
     }
 
+    /// Evaluates if a specific level meets the criteria for compaction.
     fn maybe_trigger_compaction(&self, level: usize) {
         if level >= MAX_LEVEL {
             return;
@@ -371,6 +408,7 @@ where
         }
     }
 
+    /// Dispatches a compaction task to the background worker.
     fn trigger_compaction(
         &self,
         state: &mut CompactionState<K, V>,
@@ -396,6 +434,7 @@ where
         });
     }
 
+    /// Updates the database state after a successful compaction.
     fn apply_compaction_success(
         &self,
         mut sstable: SSTable<K, V>,
@@ -457,16 +496,19 @@ where
         Ok(())
     }
 
+    /// Returns the number of SSTables currently being compacted.
     pub fn compaction_backlog(&self) -> usize {
         let state = self.compaction_state.lock();
         state.compacting_ids.len()
     }
 
+    /// Returns the total number of SSTables across all levels.
     pub fn total_sst_count(&self) -> usize {
         let version = self.version.load();
         version.levels.iter().map(|l| l.len()).sum()
     }
 
+    /// Creates a point-in-time snapshot of the database.
     pub fn snapshot(&self) -> Snapshot<K, V> {
         let seq = self
             .sequence_number
@@ -481,6 +523,7 @@ where
         }
     }
 
+    /// Creates a merged iterator for a given snapshot.
     pub fn iter<'a>(&self, snapshot: &'a Snapshot<K, V>) -> Result<MergedIterator<'a, K, V>> {
         let snapshot_seq = snapshot.seq;
         let mut sources = Vec::new();
@@ -512,6 +555,7 @@ where
         Ok(MergedIterator::new(sources))
     }
 
+    /// Returns the minimum sequence number among all active snapshots.
     pub fn min_active_seq(&self) -> u64 {
         let snapshots = self.active_snapshots.lock();
         snapshots.keys().next().copied().unwrap_or_else(|| {
@@ -520,6 +564,7 @@ where
         })
     }
 
+    /// Removes a snapshot and cleans up associated obsolete files.
     pub(crate) fn unregister_snapshot(&self, seq: u64) {
         self.active_snapshots.lock().remove(&seq);
 
@@ -535,6 +580,7 @@ where
         });
     }
 
+    /// Returns the total number of I/O operations avoided by bloom filters.
     pub fn bloom_filter_avoided_io(&self) -> u64 {
         let version = self.version.load();
         version
@@ -545,6 +591,7 @@ where
             .sum()
     }
 
+    /// Returns cache hit and miss statistics.
     pub fn block_cache_stats(&self) -> (u64, u64) {
         (
             self.block_cache
@@ -554,5 +601,10 @@ where
                 .misses
                 .load(std::sync::atomic::Ordering::Relaxed),
         )
+    }
+
+    /// Forcefully synchronizes the write-ahead log to disk.
+    pub fn flush(&self) -> Result<()> {
+        self.wal.flush()
     }
 }

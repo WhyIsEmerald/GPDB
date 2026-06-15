@@ -1,7 +1,11 @@
+//! SSTable type definitions.
+//!
+//! Defines the identifiers, metadata, and configuration constants for on-disk sorted string tables.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-/// Unique identifier for an SSTable.
+/// A struct that represents a unique identifier for an SSTable.
 pub struct SSTableId(pub u64);
 
 impl std::fmt::Display for SSTableId {
@@ -10,19 +14,29 @@ impl std::fmt::Display for SSTableId {
     }
 }
 
+/// The filter type used for XOR filters with 8-bit buckets.
 pub const FILTER_TYPE_XOR8: u8 = 0;
+/// The filter type used for XOR filters with 16-bit buckets.
 pub const FILTER_TYPE_XOR16: u8 = 1;
 
+/// The compression type used for no compression.
 pub const COMPRESSION_NONE: u8 = 0;
+/// The compression type used for Zstandard compression.
 pub const COMPRESSION_ZSTD: u8 = 1;
+/// The compression type used for LZ4 compression.
 pub const COMPRESSION_LZ4: u8 = 2;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-/// Metadata for an SSTable, stored in the file.
+/// A struct that represents metadata for an SSTable.
 pub struct TableMeta<K> {
+    /// The smallest key used in the table.
     pub min_key: K,
+    /// The largest key used in the table.
     pub max_key: K,
+    /// The number of entries used in the table.
     pub num_entries: u64,
+    /// The filter type used for the table.
     pub filter_type: u8,
+    /// The compression type used for the table.
     pub compression_type: u8,
 }

@@ -1,4 +1,10 @@
+//! Sizable trait implementation.
+//!
+//! Provides a standardized way to calculate the memory footprint of various types.
+
+/// A trait that provides a method to calculate the size of a type in bytes.
 pub trait Sizable {
+    /// Returns the size of the item in bytes.
     fn size(&self) -> usize;
 }
 

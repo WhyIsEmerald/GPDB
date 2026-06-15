@@ -1,3 +1,8 @@
+//! Merged iterator implementation.
+//!
+//! Provides a unified, sorted view of entries from multiple sources (MemTables and SSTables),
+//! handling MVCC resolution and tombstone filtering.
+
 use crate::db::memtable::SkipMapIterator;
 use crate::db::sstable::iterator::SSTableIterator;
 use crate::{DBKey, Entry, Result};
@@ -5,15 +10,22 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-/// A unified source of sorted entries from either a MemTable or an SSTable.
+/// An enum that represents a wrapper for sorted entry sources, abstracting over MemTables and SSTables.
 pub enum Source<'a, K, V> {
+    /// The source providing entries from an on-disk SSTable.
     SSTable {
+        /// The iterator used for the SSTable.
         it: SSTableIterator<K, V>,
+        /// The snapshot sequence number used for the SSTable.
         snapshot_seq: u64,
     },
+    /// The source providing entries from an in-memory MemTable.
     MemTable {
+        /// The iterator used for the MemTable.
         it: SkipMapIterator<'a, K, V>,
+        /// The snapshot sequence number used for the MemTable.
         snapshot_seq: u64,
+        /// The buffer used for the MemTable.
         buffer: Option<Entry<K, V>>,
     },
 }
@@ -92,9 +104,11 @@ where
     }
 }
 
-/// An item in the merge heap, containing the current entry and the source it came from.
+/// A struct that represents an internal wrapper for the merge heap, associating an entry with its source.
 struct HeapItem<'a, K, V> {
+    /// The entry used for comparison.
     entry: Entry<K, V>,
+    /// The source used for the entry.
     source: Source<'a, K, V>,
 }
 
@@ -128,8 +142,9 @@ where
     }
 }
 
-/// A merged iterator that provides a unified, sorted view of all data across MemTables and SSTables.
+/// A struct that represents an iterator that merges multiple sorted sources into a single sorted stream.
 pub struct MergedIterator<'a, K, V> {
+    /// The heap used to find the smallest key across all sources.
     heap: BinaryHeap<HeapItem<'a, K, V>>,
 }
 
@@ -138,6 +153,7 @@ where
     K: DBKey + Send + Sync + 'static,
     V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
+    /// Creates a new merged iterator from a collection of sorted sources.
     pub fn new(sources: Vec<Source<'a, K, V>>) -> Self {
         let mut heap = BinaryHeap::new();
         for mut source in sources {

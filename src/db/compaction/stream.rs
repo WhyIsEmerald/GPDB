@@ -4,9 +4,13 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
+/// A struct that represents an element in the merge stream, associating an entry with its source SSTable.
 pub struct MergeElement<K, V> {
+    /// The SSTable ID used for the element.
     pub sstable_id: SSTableId,
+    /// The entry used for the element.
     pub entry: Entry<K, V>,
+    /// The iterator index used for the element.
     pub iter_index: usize,
 }
 
@@ -43,12 +47,15 @@ impl<K: DBKey, V> Ord for MergeElement<K, V> {
     }
 }
 
+/// A struct that represents a stream that merges multiple sorted SSTables into a single sorted stream.
 pub struct MergeStream<K, V>
 where
     K: DBKey + Send + Sync + 'static,
     V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
+    /// The heap used to efficiently find the smallest key across all sources.
     heap: BinaryHeap<MergeElement<K, V>>,
+    /// The iterators used for the SSTables.
     iters: Vec<SSTableIterator<K, V>>,
 }
 
@@ -57,6 +64,7 @@ where
     K: DBKey + Send + Sync + 'static,
     V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
+    /// Creates a new MergeStream from a set of SSTables.
     pub fn new(sstables: &[SSTable<K, V>]) -> Result<Self> {
         let mut iters = Vec::with_capacity(sstables.len());
         let mut heap = BinaryHeap::with_capacity(sstables.len());

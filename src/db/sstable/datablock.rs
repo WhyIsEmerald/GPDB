@@ -4,9 +4,9 @@ use std::io::{Cursor, Read};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-/// Target size for a data block (4KB)
+/// The target size used for a data block (4KB).
 pub const BLOCK_SIZE: usize = 4096;
-/// Number of entries between restart points
+/// The number of entries between restart points.
 pub const RESTART_INTERVAL: usize = 16;
 
 fn pack_footer(seq: u64, is_tombstone: bool) -> [u8; 8] {
@@ -22,16 +22,18 @@ fn unpack_footer(footer: &[u8; 8]) -> (u64, bool) {
     (seq, is_tombstone)
 }
 
-/// A DataBlock using Delta Encoding (Prefix Compression).
-/// The restart points allow binary search by jumping to full-key entries.
+/// A struct that represents a DataBlock using Delta Encoding (Prefix Compression).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DataBlock<K, V> {
+    /// The binary data used for the block.
     pub data: Vec<u8>,
+    /// The restart points used for binary search.
     pub restart_points: Vec<u32>,
     _phantom: PhantomData<(K, V)>,
 }
 
 impl<K, V> DataBlock<K, V> {
+    /// Creates a new DataBlock.
     pub fn new(data: Vec<u8>, restart_points: Vec<u32>) -> Self {
         Self {
             data,
@@ -40,6 +42,7 @@ impl<K, V> DataBlock<K, V> {
         }
     }
 
+    /// Returns an iterator over the data block.
     pub fn iter(self: &Arc<Self>) -> DataBlockIterator<K, V> {
         DataBlockIterator {
             block: Arc::clone(self),
@@ -49,6 +52,7 @@ impl<K, V> DataBlock<K, V> {
         }
     }
 
+    /// Returns a borrowed iterator over the data block.
     pub fn iter_borrowed(&self) -> BorrowingDataBlockIterator<'_, K, V> {
         BorrowingDataBlockIterator {
             block: self,
@@ -58,7 +62,7 @@ impl<K, V> DataBlock<K, V> {
         }
     }
 
-    /// Get a value by key from the data block.
+    /// Retrieves a value by key from the data block.
     pub fn get(&self, target: &K) -> Option<crate::ValueEntry<V>>
     where
         K: DBKey,
@@ -134,12 +138,17 @@ impl<K, V> DataBlock<K, V> {
     }
 }
 
-/// BlockBuilder helps group items into DataBlocks using Prefix Compression.
+/// A struct that helps group items into DataBlocks using Prefix Compression.
 pub struct DeltaBlockBuilder<K, V> {
+    /// The accumulated data used for the block.
     data: Vec<u8>,
+    /// The restart points used for the block.
     restart_points: Vec<u32>,
+    /// The last key bytes used for delta encoding.
     last_key_bytes: Vec<u8>,
+    /// The number of entries used in the block.
     count: usize,
+    /// The target size used for the block.
     target_size: usize,
     _phantom: PhantomData<(K, V)>,
 }
@@ -149,6 +158,7 @@ where
     K: DBKey,
     V: Serialize,
 {
+    /// Creates a new DeltaBlockBuilder with a specified target size.
     pub fn new(target_size: usize) -> Self {
         Self {
             data: Vec::with_capacity(target_size),
@@ -160,6 +170,7 @@ where
         }
     }
 
+    /// Adds a key-value pair to the builder.
     pub fn add(&mut self, key: &K, value: &ValueEntry<V>) {
         let mut internal_key_bytes = bincode::serialize(key).unwrap_or_default();
         internal_key_bytes
@@ -192,14 +203,17 @@ where
         self.count += 1;
     }
 
+    /// Checks if the builder has reached its target size.
     pub fn is_full(&self) -> bool {
         self.data.len() + (self.restart_points.len() * 4) >= self.target_size
     }
 
+    /// Checks if the builder is empty.
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
 
+    /// Finalizes the builder and returns a DataBlock.
     pub fn finish(&mut self) -> DataBlock<K, V> {
         let data = std::mem::take(&mut self.data);
         let restart_points = std::mem::take(&mut self.restart_points);
@@ -209,14 +223,19 @@ where
     }
 }
 
+/// A struct that represents an iterator over a DataBlock.
 pub struct DataBlockIterator<K, V> {
+    /// The block used for the iterator.
     block: Arc<DataBlock<K, V>>,
+    /// The current position used for the iterator.
     position: usize,
+    /// The last key bytes used for delta decoding.
     last_key_bytes: Vec<u8>,
     _phantom: PhantomData<(K, V)>,
 }
 
 impl<K, V> DataBlockIterator<K, V> {
+    /// Seeks the iterator to a specified offset.
     pub fn seek_to_offset(&mut self, offset: usize) {
         self.position = offset;
         self.last_key_bytes.clear();
@@ -276,14 +295,19 @@ where
     }
 }
 
+/// A struct that represents a borrowed iterator over a DataBlock.
 pub struct BorrowingDataBlockIterator<'a, K, V> {
+    /// The block used for the iterator.
     block: &'a DataBlock<K, V>,
+    /// The current position used for the iterator.
     position: usize,
+    /// The last key bytes used for delta decoding.
     last_key_bytes: Vec<u8>,
     _phantom: PhantomData<(K, V)>,
 }
 
 impl<'a, K, V> BorrowingDataBlockIterator<'a, K, V> {
+    /// Seeks the iterator to a specified offset.
     pub fn seek_to_offset(&mut self, offset: usize) {
         self.position = offset;
         self.last_key_bytes.clear();

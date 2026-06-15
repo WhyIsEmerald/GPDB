@@ -22,6 +22,7 @@ where
     K: DBKey + Send + Sync + 'static,
     V: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
+    /// Opens an SSTable from the specified path.
     pub fn open(
         path: &Path,
         block_cache: Option<Arc<crate::db::cache::BlockCache<K, V>>>,
@@ -134,6 +135,7 @@ where
         })
     }
 
+    /// Retrieves a value entry for the given key.
     pub fn get(&self, key: &K) -> Result<Option<ValueEntry<V>>> {
         if key < self.min_key() || key > self.max_key() {
             return Ok(None);
@@ -219,6 +221,7 @@ where
         block.get(key).map_or(Ok(None), |v| Ok(Some(v)))
     }
 
+    /// Computes the hash of a key for filter lookups.
     pub(crate) fn hash_key(&self, key: &K) -> u64 {
         use std::hash::Hasher;
         let mut s = twox_hash::XxHash64::with_seed(0);

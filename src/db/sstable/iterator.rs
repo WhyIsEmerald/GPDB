@@ -8,11 +8,17 @@ use std::io::{BufReader, Seek};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+/// A struct that represents a sorted iterator over an SSTable.
 pub struct SSTableIterator<K, V> {
+    /// The reader used for the SSTable.
     pub(crate) reader: BufReader<File>,
+    /// The offset used for the end of the data section.
     pub(crate) data_end_offset: u64,
+    /// The compression type used for the SSTable.
     pub(crate) compression_type: u8,
+    /// The current data block being iterated.
     pub(crate) current_block: Option<Arc<DataBlock<K, V>>>,
+    /// The current iterator used for the data block.
     pub(crate) current_iter: Option<DataBlockIterator<K, V>>,
     pub(crate) _phantom: PhantomData<(K, V)>,
 }
@@ -22,6 +28,7 @@ where
     K: DBKey,
     V: Serialize + DeserializeOwned,
 {
+    /// Creates a new SSTableIterator.
     pub(crate) fn new(reader: BufReader<File>, data_end_offset: u64, compression_type: u8) -> Self {
         Self {
             reader,
@@ -33,6 +40,7 @@ where
         }
     }
 
+    /// Loads the next data block from the reader.
     fn load_next_block(&mut self) -> Result<bool> {
         let current_pos = self.reader.stream_position()?;
         if current_pos >= self.data_end_offset {

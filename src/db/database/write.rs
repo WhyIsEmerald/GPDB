@@ -1,3 +1,5 @@
+//! Write path implementation for the database.
+
 use crate::db::database::DB;
 use crate::{DBKey, LogEntry, LogOperation, Result, WriteBatch, types::sizable::Sizable};
 use serde::Serialize;
@@ -10,18 +12,21 @@ where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
     V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
+    /// Inserts a key-value pair into the database.
     pub fn put(&self, key: K, value: V) -> Result<()> {
         let mut batch = WriteBatch::new();
         batch.put(key, value);
         self.write_batch(batch)
     }
 
+    /// Deletes a key from the database.
     pub fn delete(&self, key: K) -> Result<()> {
         let mut batch = WriteBatch::new();
         batch.delete(key);
         self.write_batch(batch)
     }
 
+    /// Atomically writes a batch of operations to the database.
     pub fn write_batch(&self, batch: WriteBatch<K, V>) -> Result<()> {
         if batch.is_empty() {
             return Ok(());

@@ -1,4 +1,11 @@
+//! GPDB: A high-performance LSM-Tree storage engine.
+//!
+//! This crate provides the core functionality for a log-structured merge-tree
+//! key-value store, including memory tables, SSTables, and a write-ahead log.
+
+/// Database modules.
 pub mod db;
+/// Type definitions and traits.
 pub mod types;
 
 pub use db::compaction::stream::*;

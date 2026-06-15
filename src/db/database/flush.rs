@@ -1,3 +1,5 @@
+//! Flush implementation for the database.
+
 use crate::db::database::DB;
 use crate::db::database::VersionState;
 use crate::types::records::DBKey;
@@ -13,6 +15,7 @@ where
     K: DBKey + Send + Sync + 'static + std::fmt::Debug,
     V: Serialize + DeserializeOwned + Send + Sync + 'static + std::fmt::Debug + Sizable,
 {
+    /// Switches the active memtable and marks the old one as immutable.
     pub(crate) fn switch_memtable(&self) -> Result<()> {
         let _lock = self.flush_mutex.lock();
         if self.config.memtable_size.load(Ordering::Relaxed) < self.config.max_memtable_size {
@@ -47,6 +50,7 @@ where
         Ok(())
     }
 
+    /// Flushes all immutable memtables to Level 0 SSTables.
     pub(crate) fn flush_immutables(&self) -> Result<()> {
         loop {
             let version = self.version.load();
